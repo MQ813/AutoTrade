@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project summary
-This repository contains the automation and validation tooling for <project>.
+This repository contains the automation and validation tooling for AutoTrade.
 Primary goals are correctness, reproducibility, and safe refactoring.
 
 ## Scope
@@ -15,6 +15,67 @@ Primary goals are correctness, reproducibility, and safe refactoring.
 3. Run focused validation first.
 4. Run broader validation if the focused checks pass.
 5. Summarize what changed, what was validated, and any remaining risk.
+
+## Multi-agent workflow for large changes
+
+For any large-scope coding task, do not proceed with a single-agent flow.
+You must use the following 3-agent group workflow before implementation begins:
+
+1. planner/manager
+2. coder
+3. review/tester
+
+A task is considered large-scope if it includes one or more of the following:
+- changes across multiple files or modules
+- refactoring of shared/core logic
+- new feature implementation affecting existing behavior
+- architecture, interface, or dependency changes
+- work expected to require multiple edit/test cycles
+
+### Role responsibilities
+
+#### planner/manager
+- Understand the request and relevant codebase context first.
+- Break the task into smaller steps with clear scope boundaries.
+- Identify affected files, risks, dependencies, and validation strategy.
+- Produce an implementation plan before coding starts.
+- Prevent unnecessary scope expansion.
+
+#### coder
+- Implement only the approved plan.
+- Keep changes minimal and scoped to the task.
+- Do not silently change architecture, interfaces, or unrelated logic.
+- If the plan becomes invalid during implementation, stop and send the issue back to planner/manager.
+
+#### review/tester
+- Review correctness, regressions, and scope discipline.
+- Check whether the implementation matches the original plan.
+- Run required lint, type, build, and test commands.
+- Report failures, risks, and missing coverage clearly.
+- Reject completion if validation is incomplete or if unrelated changes were introduced.
+
+### Required execution order
+1. planner/manager creates the plan
+2. coder implements the planned change
+3. review/tester reviews and validates the result
+
+Do not skip planner/manager for large-scope tasks.
+Do not let coder self-approve completion without review/tester validation.
+Do not mark the task complete until review/tester passes the required checks.
+
+### Output requirements for large tasks
+Before coding, planner/manager must provide:
+- task summary
+- affected files/modules
+- implementation steps
+- risk points
+- validation plan
+
+After coding, review/tester must provide:
+- review summary
+- validation commands run
+- pass/fail status
+- remaining risks or follow-ups
 
 ## Validation commands
 - Lint: `ruff check .`

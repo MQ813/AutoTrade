@@ -1,0 +1,8 @@
+AutoTrade 일지.docx
+.codex
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+~$*.docx
