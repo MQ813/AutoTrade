@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from autotrade.broker import BrokerNormalizationError
+from autotrade.broker import BrokerReader
+from autotrade.broker import normalize_holding
+from autotrade.broker import normalize_order_capacity
+from autotrade.broker import normalize_quote
+from autotrade.common import Holding
+from autotrade.common import OrderCapacity
+from autotrade.common import Quote
+
+
+def test_normalize_quote_converts_decimal_and_aware_timestamp() -> None:
+    quote = normalize_quote(
+        {
+            "symbol": "069500",
+            "price": "12345.67",
+            "as_of": "2026-04-11T09:00:00+09:00",
+        },
+    )
+
+    assert quote == Quote(
+        symbol="069500",
+        price=Decimal("12345.67"),
+        as_of=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+
+def test_normalize_quote_rejects_naive_timestamp() -> None:
+    with pytest.raises(BrokerNormalizationError, match="timezone-aware"):
+        normalize_quote(
+            {
+                "symbol": "069500",
+                "price": "12345.67",
+                "as_of": "2026-04-11T09:00:00",
+            },
+        )
+
+
+def test_normalize_holding_accepts_optional_current_price() -> None:
+    holding = normalize_holding(
+        {
+            "symbol": "357870",
+            "quantity": "7",
+            "average_price": "10100",
+        },
+    )
+
+    assert holding == Holding(
+        symbol="357870",
+        quantity=7,
+        average_price=Decimal("10100"),
+        current_price=None,
+    )
+
+
+def test_normalize_order_capacity_converts_numeric_fields() -> None:
+    capacity = normalize_order_capacity(
+        {
+            "symbol": "114800",
+            "order_price": "10250",
+            "max_orderable_quantity": "13",
+            "cash_available": "133250",
+        },
+    )
+
+    assert capacity == OrderCapacity(
+        symbol="114800",
+        order_price=Decimal("10250"),
+        max_orderable_quantity=13,
+        cash_available=Decimal("133250"),
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "symbol": "069500",
+            "price": "not-a-number",
+            "as_of": "2026-04-11T09:00:00+09:00",
+        },
+        {
+            "symbol": "069500",
+            "price": "12345.67",
+        },
+        {
+            "symbol": "114800",
+            "order_price": "10250",
+            "max_orderable_quantity": "1.5",
+            "cash_available": "133250",
+        },
+    ],
+)
+def test_normalizers_raise_broker_normalization_error_for_invalid_payloads(
+    payload: dict[str, str],
+) -> None:
+    normalizer = normalize_quote if "price" in payload else normalize_order_capacity
+
+    with pytest.raises(BrokerNormalizationError):
+        normalizer(payload)
+
+
+def test_broker_reader_contract_returns_standard_models() -> None:
+    reader = DummyBrokerReader()
+
+    assert isinstance(reader, BrokerReader)
+
+    quote = reader.get_quote("069500")
+    holdings = reader.get_holdings()
+    capacity = reader.get_order_capacity("069500", Decimal("10250"))
+
+    assert isinstance(quote, Quote)
+    assert isinstance(holdings, tuple)
+    assert holdings == tuple(sorted(holdings, key=lambda holding: holding.symbol))
+    assert all(isinstance(holding, Holding) for holding in holdings)
+    assert isinstance(capacity, OrderCapacity)
+    assert capacity.order_price == Decimal("10250")
+
+
+class DummyBrokerReader:
+    def get_quote(self, symbol: str) -> Quote:
+        return normalize_quote(
+            {
+                "symbol": symbol,
+                "price": "12345.67",
+                "as_of": "2026-04-11T09:00:00+09:00",
+            },
+        )
+
+    def get_holdings(self) -> tuple[Holding, ...]:
+        normalized = (
+            normalize_holding(
+                {
+                    "symbol": "357870",
+                    "quantity": "2",
+                    "average_price": "10000",
+                    "current_price": "10100",
+                },
+            ),
+            normalize_holding(
+                {
+                    "symbol": "069500",
+                    "quantity": "1",
+                    "average_price": "9000",
+                    "current_price": "9500",
+                },
+            ),
+        )
+        return tuple(sorted(normalized, key=lambda holding: holding.symbol))
+
+    def get_order_capacity(
+        self,
+        symbol: str,
+        order_price: Decimal,
+    ) -> OrderCapacity:
+        return normalize_order_capacity(
+            {
+                "symbol": symbol,
+                "order_price": str(order_price),
+                "max_orderable_quantity": "13",
+                "cash_available": "133250",
+            },
+        )
