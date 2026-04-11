@@ -4,12 +4,15 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from autotrade.config.models import AppSettings
 from autotrade.config.models import BrokerSettings
+from autotrade.config.models import BrokerEnvironment
 
 ETF_CODE_PATTERN = re.compile(r"^\d{6}$")
 DEFAULT_BROKER_PROVIDER = "koreainvestment"
+DEFAULT_BROKER_ENVIRONMENT = "paper"
 
 
 class ConfigError(ValueError):
@@ -23,6 +26,13 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
         environment,
         "AUTOTRADE_BROKER_PROVIDER",
         default=DEFAULT_BROKER_PROVIDER,
+    )
+    broker_environment = _parse_broker_environment(
+        _read_optional_value(
+            environment,
+            "AUTOTRADE_BROKER_ENV",
+            default=DEFAULT_BROKER_ENVIRONMENT,
+        ),
     )
     api_key = _read_required_value(environment, "AUTOTRADE_BROKER_API_KEY")
     api_secret = _read_required_value(environment, "AUTOTRADE_BROKER_API_SECRET")
@@ -38,6 +48,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
             api_key=api_key,
             api_secret=api_secret,
             account=account,
+            environment=broker_environment,
         ),
         target_etfs=target_etfs,
         log_dir=log_dir,
@@ -67,6 +78,15 @@ def _read_optional_value(
 
     value = raw_value.strip()
     return value or default
+
+
+def _parse_broker_environment(raw_value: str) -> BrokerEnvironment:
+    normalized = raw_value.strip().lower()
+    if normalized not in {"paper", "live"}:
+        raise ConfigError(
+            "AUTOTRADE_BROKER_ENV must be one of: paper, live",
+        )
+    return cast(BrokerEnvironment, normalized)
 
 
 def _parse_target_etfs(raw_value: str) -> tuple[str, ...]:

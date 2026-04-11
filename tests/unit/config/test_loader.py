@@ -24,6 +24,7 @@ def test_load_settings_returns_app_settings_with_default_provider(
 
     assert isinstance(settings, AppSettings)
     assert settings.broker.provider == "koreainvestment"
+    assert settings.broker.environment == "paper"
     assert settings.target_etfs == ("069500", "357870", "114800")
     assert settings.log_dir == tmp_path / "logs"
 
@@ -101,9 +102,31 @@ def test_load_settings_preserves_target_etf_order(tmp_path: Path) -> None:
     assert settings.target_etfs == ("360750", "069500", "114800")
 
 
+def test_load_settings_accepts_live_broker_environment(tmp_path: Path) -> None:
+    settings = load_settings(
+        _make_env(
+            tmp_path,
+            AUTOTRADE_BROKER_ENV="live",
+        ),
+    )
+
+    assert settings.broker.environment == "live"
+
+
+def test_load_settings_rejects_invalid_broker_environment(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError):
+        load_settings(
+            _make_env(
+                tmp_path,
+                AUTOTRADE_BROKER_ENV="staging",
+            ),
+        )
+
+
 def _make_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
     env = {
         "AUTOTRADE_BROKER_PROVIDER": "koreainvestment",
+        "AUTOTRADE_BROKER_ENV": "paper",
         "AUTOTRADE_BROKER_API_KEY": "demo-key",
         "AUTOTRADE_BROKER_API_SECRET": "demo-secret",
         "AUTOTRADE_BROKER_ACCOUNT": "12345678-01",

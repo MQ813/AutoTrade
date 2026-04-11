@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -8,12 +9,16 @@ import pytest
 
 from autotrade.broker import BrokerNormalizationError
 from autotrade.broker import BrokerReader
+from autotrade.broker.korea_investment import HttpRequest
+from autotrade.broker.korea_investment import HttpResponse
+from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
 from autotrade.broker import normalize_holding
 from autotrade.broker import normalize_order_capacity
 from autotrade.broker import normalize_quote
 from autotrade.common import Holding
 from autotrade.common import OrderCapacity
 from autotrade.common import Quote
+from autotrade.config import BrokerSettings
 
 
 def test_normalize_quote_converts_decimal_and_aware_timestamp() -> None:
@@ -124,6 +129,28 @@ def test_broker_reader_contract_returns_standard_models() -> None:
     assert capacity.order_price == Decimal("10250")
 
 
+def test_korea_investment_broker_reader_conforms_to_contract() -> None:
+    reader = KoreaInvestmentBrokerReader(
+        BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+        ),
+        transport=_ContractTransport(),
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert isinstance(reader, BrokerReader)
+    assert isinstance(reader.get_quote("069500"), Quote)
+    assert isinstance(reader.get_holdings(), tuple)
+    assert isinstance(
+        reader.get_order_capacity("069500", Decimal("10250")),
+        OrderCapacity,
+    )
+
+
 class DummyBrokerReader:
     def get_quote(self, symbol: str) -> Quote:
         return normalize_quote(
@@ -168,3 +195,68 @@ class DummyBrokerReader:
                 "cash_available": "133250",
             },
         )
+
+
+class _ContractTransport:
+    def __init__(self) -> None:
+        self.requests: list[HttpRequest] = []
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        self.requests.append(request)
+        path = request.url.split("?")[0].split(
+            "https://openapivts.koreainvestment.com:29443",
+        )[-1]
+        if path == "/oauth2/tokenP":
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps({"access_token": "token-123"}).encode("utf-8"),
+            )
+        if path == "/uapi/domestic-stock/v1/quotations/inquire-price":
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "stck_bsop_date": "20260411",
+                            "stck_cntg_hour": "090000",
+                            "stck_prpr": "12345.67",
+                        },
+                    },
+                ).encode("utf-8"),
+            )
+        if path == "/uapi/domestic-stock/v1/trading/inquire-balance":
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "rt_cd": "0",
+                        "output1": [
+                            {
+                                "pdno": "069500",
+                                "hldg_qty": "1",
+                                "pchs_avg_pric": "9000",
+                                "prpr": "9500",
+                            }
+                        ],
+                    },
+                ).encode("utf-8"),
+            )
+        if path == "/uapi/domestic-stock/v1/trading/inquire-psbl-order":
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "ord_psbl_cash": "133250",
+                            "max_buy_qty": "13",
+                        },
+                    },
+                ).encode("utf-8"),
+            )
+        raise AssertionError(f"unexpected request: {path}")
