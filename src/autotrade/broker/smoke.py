@@ -42,7 +42,7 @@ def run_read_only_smoke(
 ) -> SmokeReport:
     now = clock or (lambda: datetime.now(timezone.utc))
     started_at = now()
-    target_symbol = settings.target_etfs[0]
+    target_symbol = settings.target_symbols[0]
     broker = KoreaInvestmentBrokerReader(
         settings.broker,
         transport=transport,

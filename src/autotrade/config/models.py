@@ -31,9 +31,9 @@ class BrokerSettings:
 @dataclass(frozen=True, slots=True)
 class AppSettings:
     broker: BrokerSettings
-    target_etfs: tuple[str, ...]
+    target_symbols: tuple[str, ...]
     log_dir: Path
 
     def __post_init__(self) -> None:
-        if not self.target_etfs:
-            raise ValueError("target_etfs must not be empty")
+        if not self.target_symbols:
+            raise ValueError("target_symbols must not be empty")

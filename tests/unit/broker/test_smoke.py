@@ -65,7 +65,7 @@ def test_run_read_only_smoke_logs_success_and_writes_file(tmp_path) -> None:
             account="12345678-01",
             environment="paper",
         ),
-        target_etfs=("069500",),
+        target_symbols=("069500",),
         log_dir=tmp_path / "logs",
     )
     fixed_now = datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))
@@ -138,7 +138,7 @@ def test_run_read_only_smoke_records_failure_step(tmp_path) -> None:
             account="12345678-01",
             environment="paper",
         ),
-        target_etfs=("069500",),
+        target_symbols=("069500",),
         log_dir=tmp_path / "logs",
     )
     fixed_now = datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))
@@ -176,7 +176,7 @@ def test_run_read_only_smoke_records_http_error_details(tmp_path) -> None:
             account="12345678-01",
             environment="paper",
         ),
-        target_etfs=("069500",),
+        target_symbols=("069500",),
         log_dir=tmp_path / "logs",
     )
     fixed_now = datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))

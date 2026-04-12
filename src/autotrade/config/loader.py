@@ -10,9 +10,10 @@ from autotrade.config.models import AppSettings
 from autotrade.config.models import BrokerSettings
 from autotrade.config.models import BrokerEnvironment
 
-ETF_CODE_PATTERN = re.compile(r"^\d{6}$")
+SYMBOL_CODE_PATTERN = re.compile(r"^\d{6}$")
 DEFAULT_BROKER_PROVIDER = "koreainvestment"
 DEFAULT_BROKER_ENVIRONMENT = "paper"
+TARGET_SYMBOLS_ENV_KEY = "AUTOTRADE_TARGET_SYMBOLS"
 
 
 class ConfigError(ValueError):
@@ -37,8 +38,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
     api_key = _read_required_value(environment, "AUTOTRADE_BROKER_API_KEY")
     api_secret = _read_required_value(environment, "AUTOTRADE_BROKER_API_SECRET")
     account = _read_required_value(environment, "AUTOTRADE_BROKER_ACCOUNT")
-    target_etfs = _parse_target_etfs(
-        _read_required_value(environment, "AUTOTRADE_TARGET_ETFS"),
+    target_symbols = _parse_target_symbols(
+        _read_required_value(environment, TARGET_SYMBOLS_ENV_KEY),
     )
     log_dir = _parse_log_dir(_read_required_value(environment, "AUTOTRADE_LOG_DIR"))
 
@@ -50,7 +51,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
             account=account,
             environment=broker_environment,
         ),
-        target_etfs=target_etfs,
+        target_symbols=target_symbols,
         log_dir=log_dir,
     )
 
@@ -89,21 +90,23 @@ def _parse_broker_environment(raw_value: str) -> BrokerEnvironment:
     return cast(BrokerEnvironment, normalized)
 
 
-def _parse_target_etfs(raw_value: str) -> tuple[str, ...]:
+def _parse_target_symbols(raw_value: str) -> tuple[str, ...]:
     parsed_codes: list[str] = []
     seen_codes: set[str] = set()
 
     for raw_code in raw_value.split(","):
         code = raw_code.strip()
         if not code:
-            raise ConfigError("AUTOTRADE_TARGET_ETFS must not contain empty entries")
-        if not ETF_CODE_PATTERN.fullmatch(code):
             raise ConfigError(
-                f"AUTOTRADE_TARGET_ETFS contains invalid ETF code: {code}",
+                f"{TARGET_SYMBOLS_ENV_KEY} must not contain empty entries",
+            )
+        if not SYMBOL_CODE_PATTERN.fullmatch(code):
+            raise ConfigError(
+                f"{TARGET_SYMBOLS_ENV_KEY} contains invalid symbol code: {code}",
             )
         if code in seen_codes:
             raise ConfigError(
-                f"AUTOTRADE_TARGET_ETFS contains duplicate ETF code: {code}"
+                f"{TARGET_SYMBOLS_ENV_KEY} contains duplicate symbol code: {code}"
             )
         seen_codes.add(code)
         parsed_codes.append(code)

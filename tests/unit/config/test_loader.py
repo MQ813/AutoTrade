@@ -17,7 +17,7 @@ def test_load_settings_returns_app_settings_with_default_provider(
             "AUTOTRADE_BROKER_API_KEY": "demo-key",
             "AUTOTRADE_BROKER_API_SECRET": "demo-secret",
             "AUTOTRADE_BROKER_ACCOUNT": "12345678-01",
-            "AUTOTRADE_TARGET_ETFS": "069500, 357870, 114800",
+            "AUTOTRADE_TARGET_SYMBOLS": "069500, 357870, 114800",
             "AUTOTRADE_LOG_DIR": str(tmp_path / "logs"),
         },
     )
@@ -25,7 +25,7 @@ def test_load_settings_returns_app_settings_with_default_provider(
     assert isinstance(settings, AppSettings)
     assert settings.broker.provider == "koreainvestment"
     assert settings.broker.environment == "paper"
-    assert settings.target_etfs == ("069500", "357870", "114800")
+    assert settings.target_symbols == ("069500", "357870", "114800")
     assert settings.log_dir == tmp_path / "logs"
 
 
@@ -35,7 +35,7 @@ def test_load_settings_returns_app_settings_with_default_provider(
         ("AUTOTRADE_BROKER_API_KEY", None),
         ("AUTOTRADE_BROKER_API_SECRET", " "),
         ("AUTOTRADE_BROKER_ACCOUNT", None),
-        ("AUTOTRADE_TARGET_ETFS", ""),
+        ("AUTOTRADE_TARGET_SYMBOLS", ""),
         ("AUTOTRADE_LOG_DIR", " "),
     ],
 )
@@ -70,7 +70,7 @@ def test_load_settings_rejects_log_dir_that_points_to_existing_file(
 
 
 @pytest.mark.parametrize(
-    "target_etfs",
+    "target_symbols",
     [
         "069500,,357870",
         "069500,ABC123",
@@ -78,28 +78,28 @@ def test_load_settings_rejects_log_dir_that_points_to_existing_file(
         "069500,069500",
     ],
 )
-def test_load_settings_rejects_invalid_target_etfs(
+def test_load_settings_rejects_invalid_target_symbols(
     tmp_path: Path,
-    target_etfs: str,
+    target_symbols: str,
 ) -> None:
     with pytest.raises(ConfigError):
         load_settings(
             _make_env(
                 tmp_path,
-                AUTOTRADE_TARGET_ETFS=target_etfs,
+                AUTOTRADE_TARGET_SYMBOLS=target_symbols,
             ),
         )
 
 
-def test_load_settings_preserves_target_etf_order(tmp_path: Path) -> None:
+def test_load_settings_preserves_target_symbol_order(tmp_path: Path) -> None:
     settings = load_settings(
         _make_env(
             tmp_path,
-            AUTOTRADE_TARGET_ETFS="360750,069500,114800",
+            AUTOTRADE_TARGET_SYMBOLS="360750,069500,114800",
         ),
     )
 
-    assert settings.target_etfs == ("360750", "069500", "114800")
+    assert settings.target_symbols == ("360750", "069500", "114800")
 
 
 def test_load_settings_accepts_live_broker_environment(tmp_path: Path) -> None:
@@ -130,7 +130,7 @@ def _make_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
         "AUTOTRADE_BROKER_API_KEY": "demo-key",
         "AUTOTRADE_BROKER_API_SECRET": "demo-secret",
         "AUTOTRADE_BROKER_ACCOUNT": "12345678-01",
-        "AUTOTRADE_TARGET_ETFS": "069500,357870",
+        "AUTOTRADE_TARGET_SYMBOLS": "069500,357870",
         "AUTOTRADE_LOG_DIR": str(tmp_path / "logs"),
     }
     env.update(overrides)
