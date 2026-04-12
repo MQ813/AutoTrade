@@ -7,13 +7,20 @@ name = "autotrade"
 version = "0.1.0"
 description = "Automation and validation tooling for AutoTrade."
 readme = "docs/roadmap.md"
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+    "pyarrow>=23.0.1",
+    "xlsxwriter>=3.2.9",
+]
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=1.11",
-    "pytest>=8.3",
-    "ruff>=0.8",
+    "mypy>=1.20.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.10",
 ]
 
 [tool.setuptools]
@@ -25,11 +32,12 @@ where = ["src"]
 [tool.ruff]
 line-length = 88
 src = ["src", "tests"]
-target-version = "py314"
+target-version = "py312"
 
 [tool.mypy]
 files = ["src"]
-python_version = "3.14"
+python_version = "3.12"
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests/unit"]

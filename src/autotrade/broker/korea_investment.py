@@ -438,7 +438,7 @@ def _format_http_error_body(body: bytes) -> str | None:
 def _try_decode_json(raw_body: bytes) -> Mapping[str, object] | None:
     try:
         decoded = json.loads(raw_body.decode("utf-8"))
-    except UnicodeDecodeError, JSONDecodeError:
+    except (UnicodeDecodeError, JSONDecodeError):
         return None
 
     if not isinstance(decoded, Mapping):
