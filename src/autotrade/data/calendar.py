@@ -6,6 +6,7 @@ from datetime import datetime
 from datetime import time
 from zoneinfo import ZoneInfo
 
+from autotrade.data.krx_holidays import KRX_HOLIDAY_DATES
 from autotrade.data.models import Timeframe
 
 KST = ZoneInfo("Asia/Seoul")
@@ -13,9 +14,13 @@ KRX_SESSION_OPEN = time(9, 0)
 KRX_SESSION_CLOSE = time(15, 30)
 
 
+def _default_holiday_dates() -> frozenset[date]:
+    return KRX_HOLIDAY_DATES
+
+
 @dataclass(frozen=True, slots=True)
 class KrxRegularSessionCalendar:
-    holiday_dates: frozenset[date] = field(default_factory=frozenset)
+    holiday_dates: frozenset[date] = field(default_factory=_default_holiday_dates)
 
     def is_trading_day(self, day: date) -> bool:
         return day.weekday() < 5 and day not in self.holiday_dates

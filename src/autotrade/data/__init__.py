@@ -1,4 +1,5 @@
 from autotrade.data.calendar import KST
+from autotrade.data.calendar import KRX_HOLIDAY_DATES
 from autotrade.data.calendar import KRX_SESSION_CLOSE
 from autotrade.data.calendar import KRX_SESSION_OPEN
 from autotrade.data.calendar import KrxRegularSessionCalendar
@@ -19,6 +20,7 @@ __all__ = [
     "BarIntegrityChecker",
     "BarStore",
     "BarSource",
+    "KRX_HOLIDAY_DATES",
     "KST",
     "KRX_SESSION_CLOSE",
     "KRX_SESSION_OPEN",
