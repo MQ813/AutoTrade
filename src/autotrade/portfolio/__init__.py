@@ -1,1 +1,3 @@
-# Portfolio package marker.
+from autotrade.portfolio.backtest import PortfolioSnapshot
+
+__all__ = ["PortfolioSnapshot"]
