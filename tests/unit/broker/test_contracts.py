@@ -9,14 +9,22 @@ import pytest
 
 from autotrade.broker import BrokerNormalizationError
 from autotrade.broker import BrokerReader
+from autotrade.broker import BrokerTrader
 from autotrade.broker.korea_investment import HttpRequest
 from autotrade.broker.korea_investment import HttpResponse
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
 from autotrade.broker import normalize_holding
 from autotrade.broker import normalize_order_capacity
 from autotrade.broker import normalize_quote
+from autotrade.common import ExecutionFill
+from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
+from autotrade.common import OrderAmendRequest
+from autotrade.common import OrderCancelRequest
 from autotrade.common import OrderCapacity
+from autotrade.common import OrderRequest
+from autotrade.common import OrderSide
+from autotrade.common import OrderStatus
 from autotrade.common import Quote
 from autotrade.config import BrokerSettings
 
@@ -151,6 +159,45 @@ def test_korea_investment_broker_reader_conforms_to_contract() -> None:
     )
 
 
+def test_broker_trader_contract_returns_standard_models() -> None:
+    trader = DummyBrokerTrader()
+
+    assert isinstance(trader, BrokerTrader)
+
+    order = trader.submit_order(
+        OrderRequest(
+            request_id="submit-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=3,
+            limit_price=Decimal("10000"),
+            requested_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id=order.order_id,
+            limit_price=Decimal("10100"),
+            requested_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    canceled = trader.cancel_order(
+        OrderCancelRequest(
+            request_id="cancel-1",
+            order_id=order.order_id,
+            requested_at=datetime(2026, 4, 11, 9, 2, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    fills = trader.get_fills(order.order_id)
+
+    assert isinstance(order, ExecutionOrder)
+    assert isinstance(amended, ExecutionOrder)
+    assert isinstance(canceled, ExecutionOrder)
+    assert isinstance(fills, tuple)
+    assert all(isinstance(fill, ExecutionFill) for fill in fills)
+
+
 class DummyBrokerReader:
     def get_quote(self, symbol: str) -> Quote:
         return normalize_quote(
@@ -194,6 +241,56 @@ class DummyBrokerReader:
                 "max_orderable_quantity": "13",
                 "cash_available": "133250",
             },
+        )
+
+
+class DummyBrokerTrader:
+    def submit_order(self, request: OrderRequest) -> ExecutionOrder:
+        return ExecutionOrder(
+            order_id="order-1",
+            symbol=request.symbol,
+            side=request.side,
+            quantity=request.quantity,
+            limit_price=request.limit_price,
+            status=OrderStatus.ACKNOWLEDGED,
+            created_at=request.requested_at,
+            updated_at=request.requested_at,
+        )
+
+    def amend_order(self, request: OrderAmendRequest) -> ExecutionOrder:
+        return ExecutionOrder(
+            order_id=request.order_id,
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=request.quantity or 3,
+            limit_price=request.limit_price or Decimal("10000"),
+            status=OrderStatus.ACKNOWLEDGED,
+            created_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            updated_at=request.requested_at,
+        )
+
+    def cancel_order(self, request: OrderCancelRequest) -> ExecutionOrder:
+        return ExecutionOrder(
+            order_id=request.order_id,
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=3,
+            limit_price=Decimal("10100"),
+            status=OrderStatus.CANCELED,
+            created_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            updated_at=request.requested_at,
+        )
+
+    def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
+        return (
+            ExecutionFill(
+                fill_id="fill-1",
+                order_id=order_id,
+                symbol="069500",
+                quantity=1,
+                price=Decimal("10050"),
+                filled_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            ),
         )
 
 

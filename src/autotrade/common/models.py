@@ -11,9 +11,13 @@ def _require_aware_datetime(field_name: str, value: datetime) -> None:
         raise ValueError(f"{field_name} must be timezone-aware")
 
 
+def _require_non_blank(field_name: str, value: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{field_name} must not be blank")
+
+
 def _require_non_empty_symbol(symbol: str) -> None:
-    if not symbol.strip():
-        raise ValueError("symbol must not be blank")
+    _require_non_blank("symbol", symbol)
 
 
 def _require_non_negative_decimal(field_name: str, value: Decimal) -> None:
@@ -26,10 +30,39 @@ def _require_non_negative_int(field_name: str, value: int) -> None:
         raise ValueError(f"{field_name} must be non-negative")
 
 
+def _require_positive_decimal(field_name: str, value: Decimal) -> None:
+    if value <= Decimal("0"):
+        raise ValueError(f"{field_name} must be positive")
+
+
+def _require_positive_int(field_name: str, value: int) -> None:
+    if value <= 0:
+        raise ValueError(f"{field_name} must be positive")
+
+
 class SignalAction(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+
+
+class OrderSide(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(StrEnum):
+    LIMIT = "LIMIT"
+
+
+class OrderStatus(StrEnum):
+    PENDING = "PENDING"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCEL_PENDING = "CANCEL_PENDING"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,3 +124,95 @@ class Signal:
         _require_aware_datetime("generated_at", self.generated_at)
         if self.reason is not None and not self.reason.strip():
             raise ValueError("reason must not be blank when provided")
+
+
+@dataclass(frozen=True, slots=True)
+class OrderRequest:
+    request_id: str
+    symbol: str
+    side: OrderSide
+    quantity: int
+    limit_price: Decimal
+    requested_at: datetime
+    order_type: OrderType = OrderType.LIMIT
+
+    def __post_init__(self) -> None:
+        _require_non_blank("request_id", self.request_id)
+        _require_non_empty_symbol(self.symbol)
+        _require_positive_int("quantity", self.quantity)
+        _require_positive_decimal("limit_price", self.limit_price)
+        _require_aware_datetime("requested_at", self.requested_at)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderAmendRequest:
+    request_id: str
+    order_id: str
+    requested_at: datetime
+    quantity: int | None = None
+    limit_price: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        _require_non_blank("request_id", self.request_id)
+        _require_non_blank("order_id", self.order_id)
+        _require_aware_datetime("requested_at", self.requested_at)
+        if self.quantity is None and self.limit_price is None:
+            raise ValueError("quantity or limit_price must be provided")
+        if self.quantity is not None:
+            _require_positive_int("quantity", self.quantity)
+        if self.limit_price is not None:
+            _require_positive_decimal("limit_price", self.limit_price)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderCancelRequest:
+    request_id: str
+    order_id: str
+    requested_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_non_blank("request_id", self.request_id)
+        _require_non_blank("order_id", self.order_id)
+        _require_aware_datetime("requested_at", self.requested_at)
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionOrder:
+    order_id: str
+    symbol: str
+    side: OrderSide
+    quantity: int
+    limit_price: Decimal
+    status: OrderStatus
+    created_at: datetime
+    updated_at: datetime
+    filled_quantity: int = 0
+
+    def __post_init__(self) -> None:
+        _require_non_blank("order_id", self.order_id)
+        _require_non_empty_symbol(self.symbol)
+        _require_positive_int("quantity", self.quantity)
+        _require_positive_decimal("limit_price", self.limit_price)
+        _require_aware_datetime("created_at", self.created_at)
+        _require_aware_datetime("updated_at", self.updated_at)
+        _require_non_negative_int("filled_quantity", self.filled_quantity)
+        if self.filled_quantity > self.quantity:
+            raise ValueError("filled_quantity must not exceed quantity")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionFill:
+    fill_id: str
+    order_id: str
+    symbol: str
+    quantity: int
+    price: Decimal
+    filled_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_non_blank("fill_id", self.fill_id)
+        _require_non_blank("order_id", self.order_id)
+        _require_non_empty_symbol(self.symbol)
+        _require_positive_int("quantity", self.quantity)
+        _require_positive_decimal("price", self.price)
+        _require_aware_datetime("filled_at", self.filled_at)
