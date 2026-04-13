@@ -13,4 +13,24 @@
 - `report/` -> `src/autotrade/report/`
 - 공통 유틸리티 -> `src/autotrade/common/`
 
-초기 목표는 구현보다 경계 정의입니다. 각 패키지는 이후 단계에서 설정, 데이터, 전략, 주문, 포트폴리오, 리포트 책임을 분리해 확장합니다.
+현재 구현은 모든 루트 모듈을 완성한 상태는 아니지만, `scheduler`와 `report`의 운영 기본 경계를 포함합니다.
+
+## Scheduler
+
+`src/autotrade/scheduler/runtime.py`
+
+- KRX 정규장 기준으로 장 시작, 장중, 장마감 실행 슬롯을 계산합니다.
+- 작업은 `ScheduledJob`과 `MarketSessionPhase`로 선언합니다.
+- 실행 결과는 `JobRunResult`로 정규화하고, 중복 실행 방지는 `SchedulerState`가 담당합니다.
+- 다음 실행 시각은 마지막 작업 완료 시각 이후의 다음 세션 슬롯으로 계산합니다.
+
+## Report
+
+`src/autotrade/report/operations.py`
+
+- 스케줄러 실행 결과를 운영 로그 항목으로 변환합니다.
+- 일일 실행 결과를 phase별 요약이 포함된 텍스트 리포트로 렌더링합니다.
+- 알림은 `Notifier` protocol로 분리해 전송 채널 의존성을 모듈 밖으로 유지합니다.
+- 백테스트 리포트는 기존 `src/autotrade/report/backtest.py`를 그대로 유지하고, 운영 리포트와 분리합니다.
+
+이 구조는 파싱, 스케줄 판단, 실행, 출력, 파일 기록을 분리해 이후 실제 실행기와 알림 전송 어댑터를 안전하게 연결하는 것을 목표로 합니다.
