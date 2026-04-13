@@ -9,7 +9,12 @@ from autotrade.common import SignalAction
 from autotrade.data import Bar
 from autotrade.data import Timeframe
 from autotrade.data import validate_bar_series
+from autotrade.portfolio import BacktestPortfolioState
 from autotrade.portfolio import PortfolioSnapshot
+from autotrade.portfolio import apply_buy_fill
+from autotrade.portfolio import apply_sell_fill
+from autotrade.portfolio import build_portfolio_snapshot
+from autotrade.portfolio import create_backtest_portfolio
 from autotrade.strategy import Strategy
 
 
@@ -81,8 +86,6 @@ class BacktestResult:
 
 @dataclass(slots=True)
 class _OpenPosition:
-    quantity: int
-    entry_price: Decimal
     entry_fees: Decimal
     entered_at: datetime
     entry_index: int
@@ -101,7 +104,7 @@ class BacktestEngine:
         timeframe = series[0].timeframe
         cost_model = config.cost_model
 
-        cash = config.initial_cash
+        portfolio = create_backtest_portfolio(config.initial_cash)
         position: _OpenPosition | None = None
         trades: list[BacktestTrade] = []
         snapshots: list[PortfolioSnapshot] = []
@@ -119,7 +122,7 @@ class BacktestEngine:
                 and not _should_skip_final_bar_entry(index, last_index, config)
             ):
                 quantity = _calculate_buy_quantity(
-                    cash=cash,
+                    cash=portfolio.cash,
                     price=bar.close,
                     cost_model=cost_model,
                 )
@@ -127,19 +130,22 @@ class BacktestEngine:
                     execution_price = _buy_execution_price(bar.close, cost_model)
                     notional = execution_price * Decimal(quantity)
                     entry_fees = notional * cost_model.commission_rate
-                    cash -= notional + entry_fees
-                    position = _OpenPosition(
+                    portfolio = apply_buy_fill(
+                        portfolio,
+                        price=execution_price,
                         quantity=quantity,
-                        entry_price=execution_price,
+                        fees=entry_fees,
+                    )
+                    position = _OpenPosition(
                         entry_fees=entry_fees,
                         entered_at=bar.timestamp,
                         entry_index=index,
                     )
 
             if signal.action is SignalAction.SELL and position is not None:
-                cash, trade = _close_position(
+                portfolio, trade = _close_position(
                     position=position,
-                    cash=cash,
+                    portfolio=portfolio,
                     price=bar.close,
                     timestamp=bar.timestamp,
                     bar_index=index,
@@ -155,9 +161,9 @@ class BacktestEngine:
                 and config.close_open_position_on_finish
                 and position is not None
             ):
-                cash, trade = _close_position(
+                portfolio, trade = _close_position(
                     position=position,
-                    cash=cash,
+                    portfolio=portfolio,
                     price=bar.close,
                     timestamp=bar.timestamp,
                     bar_index=index,
@@ -169,11 +175,11 @@ class BacktestEngine:
                 position = None
 
             snapshots.append(
-                _build_snapshot(
+                build_portfolio_snapshot(
+                    portfolio,
                     symbol=symbol,
-                    bar=bar,
-                    cash=cash,
-                    position=position,
+                    timestamp=bar.timestamp,
+                    close_price=bar.close,
                 )
             )
 
@@ -265,28 +271,34 @@ def _sell_execution_price(
 def _close_position(
     *,
     position: _OpenPosition,
-    cash: Decimal,
+    portfolio: BacktestPortfolioState,
     price: Decimal,
     timestamp: datetime,
     bar_index: int,
     cost_model: BacktestCostModel,
     symbol: str,
     exit_reason: str,
-) -> tuple[Decimal, BacktestTrade]:
+) -> tuple[BacktestPortfolioState, BacktestTrade]:
     execution_price = _sell_execution_price(price, cost_model)
-    quantity_decimal = Decimal(position.quantity)
+    quantity = portfolio.position_quantity
+    quantity_decimal = Decimal(quantity)
     notional = execution_price * quantity_decimal
     exit_fees = notional * (cost_model.commission_rate + cost_model.tax_rate)
-    gross_pnl = (execution_price - position.entry_price) * quantity_decimal
-    net_pnl = gross_pnl - position.entry_fees - exit_fees
-    updated_cash = cash + notional - exit_fees
+    gross_pnl = (execution_price - portfolio.average_price) * quantity_decimal
+    updated_portfolio = apply_sell_fill(
+        portfolio,
+        price=execution_price,
+        quantity=quantity,
+        fees=exit_fees,
+    )
+    net_pnl = updated_portfolio.realized_pnl - portfolio.realized_pnl
 
     trade = BacktestTrade(
         symbol=symbol,
         entered_at=position.entered_at,
         exited_at=timestamp,
-        quantity=position.quantity,
-        entry_price=position.entry_price,
+        quantity=quantity,
+        entry_price=portfolio.average_price,
         exit_price=execution_price,
         entry_fees=position.entry_fees,
         exit_fees=exit_fees,
@@ -295,24 +307,4 @@ def _close_position(
         holding_period_bars=bar_index - position.entry_index,
         exit_reason=exit_reason,
     )
-    return updated_cash, trade
-
-
-def _build_snapshot(
-    *,
-    symbol: str,
-    bar: Bar,
-    cash: Decimal,
-    position: _OpenPosition | None,
-) -> PortfolioSnapshot:
-    quantity = 0 if position is None else position.quantity
-    market_value = bar.close * Decimal(quantity)
-    return PortfolioSnapshot(
-        symbol=symbol,
-        timestamp=bar.timestamp,
-        close_price=bar.close,
-        cash=cash,
-        position_quantity=quantity,
-        position_market_value=market_value,
-        total_equity=cash + market_value,
-    )
+    return updated_portfolio, trade

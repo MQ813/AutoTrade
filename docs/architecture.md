@@ -15,6 +15,15 @@
 
 현재 구현은 모든 루트 모듈을 완성한 상태는 아니지만, `scheduler`와 `report`의 운영 기본 경계를 포함합니다.
 
+## Portfolio
+
+`src/autotrade/portfolio/backtest.py`
+
+- 백테스트 포트폴리오 상태는 `BacktestPortfolioState`로 관리합니다.
+- 상태에는 초기 현금, 현재 현금, 보유 수량, 평균단가, 포지션 원가, 실현 손익을 저장합니다.
+- 스냅샷은 종가 기준으로 현금, 평균단가, 평가금액, 실현 손익, 평가 손익, 총 손익, 총 자산을 계산합니다.
+- `execution.backtest`는 주문 신호와 체결 시점 제어만 담당하고, 잔고/평단/손익 계산은 `portfolio` 모듈로 위임합니다.
+
 ## Scheduler
 
 `src/autotrade/scheduler/runtime.py`

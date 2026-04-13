@@ -65,7 +65,15 @@ def test_backtest_applies_costs_and_slippage_to_trade_and_equity() -> None:
     assert trade.entry_fees == Decimal("9.18")
     assert trade.exit_fees == Decimal("14.553")
     assert trade.net_pnl == Decimal("28.467")
+    assert result.snapshots[0].position_average_price == Decimal("102")
+    assert result.snapshots[0].realized_pnl == Decimal("0")
+    assert result.snapshots[0].unrealized_pnl == Decimal("-27.18")
+    assert result.snapshots[0].total_pnl == Decimal("-27.18")
     assert result.snapshots[0].total_equity == Decimal("972.82")
+    assert result.snapshots[-1].position_average_price == Decimal("0")
+    assert result.snapshots[-1].realized_pnl == Decimal("28.467")
+    assert result.snapshots[-1].unrealized_pnl == Decimal("0")
+    assert result.snapshots[-1].total_pnl == Decimal("28.467")
     assert result.snapshots[-1].total_equity == Decimal("1028.467")
 
 
