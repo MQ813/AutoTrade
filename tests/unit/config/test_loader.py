@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from decimal import Decimal
 
 import pytest
 
@@ -113,12 +114,51 @@ def test_load_settings_accepts_live_broker_environment(tmp_path: Path) -> None:
     assert settings.broker.environment == "live"
 
 
+def test_load_settings_reads_risk_settings(tmp_path: Path) -> None:
+    settings = load_settings(
+        _make_env(
+            tmp_path,
+            AUTOTRADE_RISK_MAX_POSITION_WEIGHT="0.35",
+            AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS="2",
+            AUTOTRADE_RISK_MAX_LOSS="150000",
+            AUTOTRADE_RISK_TRADING_HALTED="true",
+        ),
+    )
+
+    assert settings.risk.max_position_weight == Decimal("0.35")
+    assert settings.risk.max_concurrent_holdings == 2
+    assert settings.risk.max_loss == Decimal("150000")
+    assert settings.risk.trading_halted is True
+
+
 def test_load_settings_rejects_invalid_broker_environment(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         load_settings(
             _make_env(
                 tmp_path,
                 AUTOTRADE_BROKER_ENV="staging",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("AUTOTRADE_RISK_MAX_POSITION_WEIGHT", "abc"),
+        ("AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS", "1.5"),
+        ("AUTOTRADE_RISK_TRADING_HALTED", "maybe"),
+    ],
+)
+def test_load_settings_rejects_invalid_risk_values(
+    tmp_path: Path,
+    key: str,
+    value: str,
+) -> None:
+    with pytest.raises((ConfigError, ValueError)):
+        load_settings(
+            _make_env(
+                tmp_path,
+                **{key: value},
             ),
         )
 

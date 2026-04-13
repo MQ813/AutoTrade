@@ -3,17 +3,23 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from decimal import Decimal
+from decimal import InvalidOperation
 from pathlib import Path
 from typing import cast
 
 from autotrade.config.models import AppSettings
 from autotrade.config.models import BrokerSettings
 from autotrade.config.models import BrokerEnvironment
+from autotrade.risk import RiskSettings
 
 SYMBOL_CODE_PATTERN = re.compile(r"^\d{6}$")
 DEFAULT_BROKER_PROVIDER = "koreainvestment"
 DEFAULT_BROKER_ENVIRONMENT = "paper"
 TARGET_SYMBOLS_ENV_KEY = "AUTOTRADE_TARGET_SYMBOLS"
+DEFAULT_RISK_MAX_POSITION_WEIGHT = "0.2"
+DEFAULT_RISK_MAX_CONCURRENT_HOLDINGS = "3"
+DEFAULT_RISK_TRADING_HALTED = "false"
 
 
 class ConfigError(ValueError):
@@ -53,6 +59,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
         ),
         target_symbols=target_symbols,
         log_dir=log_dir,
+        risk=_load_risk_settings(environment),
     )
 
 
@@ -119,3 +126,75 @@ def _parse_log_dir(raw_value: str) -> Path:
     if log_dir.exists() and not log_dir.is_dir():
         raise ConfigError(f"AUTOTRADE_LOG_DIR must point to a directory: {log_dir}")
     return log_dir
+
+
+def _load_risk_settings(environment: Mapping[str, str]) -> RiskSettings:
+    return RiskSettings(
+        max_position_weight=_parse_decimal_setting(
+            _read_optional_value(
+                environment,
+                "AUTOTRADE_RISK_MAX_POSITION_WEIGHT",
+                default=DEFAULT_RISK_MAX_POSITION_WEIGHT,
+            ),
+            key="AUTOTRADE_RISK_MAX_POSITION_WEIGHT",
+        ),
+        max_concurrent_holdings=_parse_int_setting(
+            _read_optional_value(
+                environment,
+                "AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS",
+                default=DEFAULT_RISK_MAX_CONCURRENT_HOLDINGS,
+            ),
+            key="AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS",
+        ),
+        max_loss=_parse_optional_decimal_setting(
+            environment,
+            "AUTOTRADE_RISK_MAX_LOSS",
+        ),
+        trading_halted=_parse_bool_setting(
+            _read_optional_value(
+                environment,
+                "AUTOTRADE_RISK_TRADING_HALTED",
+                default=DEFAULT_RISK_TRADING_HALTED,
+            ),
+            key="AUTOTRADE_RISK_TRADING_HALTED",
+        ),
+    )
+
+
+def _parse_decimal_setting(raw_value: str, *, key: str) -> Decimal:
+    normalized = raw_value.strip()
+    try:
+        return Decimal(normalized)
+    except InvalidOperation as error:
+        raise ConfigError(f"{key} must be a decimal-compatible value") from error
+
+
+def _parse_optional_decimal_setting(
+    environment: Mapping[str, str],
+    key: str,
+) -> Decimal | None:
+    raw_value = environment.get(key)
+    if raw_value is None:
+        return None
+
+    normalized = raw_value.strip()
+    if not normalized:
+        return None
+    return _parse_decimal_setting(normalized, key=key)
+
+
+def _parse_int_setting(raw_value: str, *, key: str) -> int:
+    normalized = raw_value.strip()
+    try:
+        return int(normalized)
+    except ValueError as error:
+        raise ConfigError(f"{key} must be an integer") from error
+
+
+def _parse_bool_setting(raw_value: str, *, key: str) -> bool:
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{key} must be a boolean value")

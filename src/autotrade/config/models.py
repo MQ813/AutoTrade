@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import Literal
+
+from autotrade.risk import RiskSettings
 
 BrokerEnvironment = Literal["paper", "live"]
 
@@ -33,6 +36,7 @@ class AppSettings:
     broker: BrokerSettings
     target_symbols: tuple[str, ...]
     log_dir: Path
+    risk: RiskSettings = field(default_factory=RiskSettings)
 
     def __post_init__(self) -> None:
         if not self.target_symbols:
