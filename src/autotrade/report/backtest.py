@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from autotrade.execution import BacktestCostModel
@@ -28,15 +29,24 @@ class BacktestPerformanceSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class BacktestOverfitCheck:
+    status: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class BacktestReport:
     symbol: str
     timeframe: str
     initial_cash: Decimal
     cost_model: BacktestCostModel
     split_timestamp: str | None
+    recent_start_timestamp: str | None
     combined: BacktestPerformanceSummary
     in_sample: BacktestPerformanceSummary | None
     out_of_sample: BacktestPerformanceSummary | None
+    recent: BacktestPerformanceSummary | None
+    overfit_check: BacktestOverfitCheck
 
 
 def build_backtest_report(result: BacktestResult) -> BacktestReport:
@@ -52,6 +62,10 @@ def build_backtest_report(result: BacktestResult) -> BacktestReport:
     in_sample: BacktestPerformanceSummary | None = None
     out_of_sample: BacktestPerformanceSummary | None = None
     split_timestamp = result.split_timestamp
+    recent_start_timestamp: str | None = None
+    recent = _build_recent_summary(result)
+    if recent is not None:
+        recent_start_timestamp = recent.start_timestamp.isoformat()
 
     if split_timestamp is not None:
         in_sample_snapshots = tuple(
@@ -99,6 +113,12 @@ def build_backtest_report(result: BacktestResult) -> BacktestReport:
             end_timestamp=result.finished_at,
         )
 
+    overfit_check = _build_overfit_check(
+        in_sample=in_sample,
+        out_of_sample=out_of_sample,
+        recent=recent.summary if recent is not None else None,
+    )
+
     return BacktestReport(
         symbol=result.symbol,
         timeframe=result.timeframe.value,
@@ -107,9 +127,12 @@ def build_backtest_report(result: BacktestResult) -> BacktestReport:
         split_timestamp=None
         if split_timestamp is None
         else split_timestamp.isoformat(),
+        recent_start_timestamp=recent_start_timestamp,
         combined=combined,
         in_sample=in_sample,
         out_of_sample=out_of_sample,
+        recent=None if recent is None else recent.summary,
+        overfit_check=overfit_check,
     )
 
 
@@ -124,14 +147,27 @@ def render_backtest_report(report: BacktestReport) -> str:
     ]
     if report.split_timestamp is not None:
         lines.append(f"split_timestamp={report.split_timestamp}")
+    if report.recent_start_timestamp is not None:
+        lines.append(f"recent_start_timestamp={report.recent_start_timestamp}")
 
     lines.extend(_render_summary(report.combined))
     if report.in_sample is not None:
         lines.extend(_render_summary(report.in_sample))
     if report.out_of_sample is not None:
         lines.extend(_render_summary(report.out_of_sample))
+    if report.recent is not None:
+        lines.extend(_render_summary(report.recent))
+    lines.append(f"overfit_check_status={report.overfit_check.status}")
+    for reason in report.overfit_check.reasons:
+        lines.append(f"overfit_check_reason={reason}")
 
     return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True, slots=True)
+class _RecentSummaryWindow:
+    start_timestamp: datetime
+    summary: BacktestPerformanceSummary
 
 
 def _build_summary(
@@ -142,7 +178,7 @@ def _build_summary(
     trades: tuple[BacktestTrade, ...],
     start_timestamp,
     end_timestamp,
-) -> BacktestPerformanceSummary:
+    ) -> BacktestPerformanceSummary:
     final_equity = start_equity if not snapshots else snapshots[-1].total_equity
     net_profit = final_equity - start_equity
     total_return = net_profit / start_equity
@@ -171,6 +207,69 @@ def _build_summary(
         average_holding_bars=_calculate_average_holding_bars(trades),
         total_fees=total_fees,
         bar_count=len(snapshots),
+    )
+
+
+def _build_recent_summary(result: BacktestResult) -> _RecentSummaryWindow | None:
+    if not result.snapshots:
+        return None
+
+    recent_bar_count = max(1, math.ceil(len(result.snapshots) * 0.2))
+    start_index = len(result.snapshots) - recent_bar_count
+    recent_snapshots = result.snapshots[start_index:]
+    recent_start_timestamp = recent_snapshots[0].timestamp
+    recent_start_equity = (
+        result.initial_cash
+        if start_index == 0
+        else result.snapshots[start_index - 1].total_equity
+    )
+    recent_trades = tuple(
+        trade for trade in result.trades if trade.exited_at >= recent_start_timestamp
+    )
+
+    return _RecentSummaryWindow(
+        start_timestamp=recent_start_timestamp,
+        summary=_build_summary(
+            label="recent",
+            start_equity=recent_start_equity,
+            snapshots=recent_snapshots,
+            trades=recent_trades,
+            start_timestamp=recent_start_timestamp,
+            end_timestamp=result.finished_at,
+        ),
+    )
+
+
+def _build_overfit_check(
+    *,
+    in_sample: BacktestPerformanceSummary | None,
+    out_of_sample: BacktestPerformanceSummary | None,
+    recent: BacktestPerformanceSummary | None,
+) -> BacktestOverfitCheck:
+    if in_sample is None or out_of_sample is None:
+        return BacktestOverfitCheck(
+            status="unavailable",
+            reasons=("out_of_sample_check_unavailable",),
+        )
+
+    reasons: list[str] = []
+    if (
+        in_sample.total_return > Decimal("0")
+        and out_of_sample.total_return <= Decimal("0")
+    ):
+        reasons.append("out_of_sample_return_reversal")
+    elif (
+        in_sample.total_return > Decimal("0")
+        and out_of_sample.total_return < in_sample.total_return * Decimal("0.5")
+    ):
+        reasons.append("out_of_sample_return_degradation")
+
+    if recent is not None and recent.total_return < Decimal("0"):
+        reasons.append("recent_period_negative_return")
+
+    return BacktestOverfitCheck(
+        status="warning" if reasons else "pass",
+        reasons=tuple(reasons),
     )
 
 

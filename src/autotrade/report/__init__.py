@@ -1,4 +1,5 @@
 from autotrade.report.backtest import BacktestPerformanceSummary
+from autotrade.report.backtest import BacktestOverfitCheck
 from autotrade.report.backtest import BacktestReport
 from autotrade.report.backtest import build_backtest_report
 from autotrade.report.backtest import render_backtest_report
@@ -21,6 +22,7 @@ from autotrade.report.operations import write_run_log
 __all__ = [
     "AlertSeverity",
     "BacktestPerformanceSummary",
+    "BacktestOverfitCheck",
     "BacktestReport",
     "DailyPhaseSummary",
     "DailyRunReport",

@@ -110,6 +110,7 @@ def test_backtest_report_separates_in_and_out_of_sample_results() -> None:
     assert report.split_timestamp == bars[3].timestamp.isoformat()
     assert report.in_sample is not None
     assert report.out_of_sample is not None
+    assert report.recent is not None
     assert report.combined.trade_count == 2
     assert report.in_sample.trade_count == 1
     assert report.in_sample.final_equity == Decimal("1200")
@@ -117,11 +118,19 @@ def test_backtest_report_separates_in_and_out_of_sample_results() -> None:
     assert report.out_of_sample.starting_equity == Decimal("1200")
     assert report.out_of_sample.final_equity == Decimal("1380")
     assert report.out_of_sample.total_return == Decimal("0.15")
+    assert report.recent_start_timestamp == bars[4].timestamp.isoformat()
+    assert report.recent.final_equity == Decimal("1380")
+    assert report.recent.total_return == Decimal("0.15")
+    assert report.overfit_check.status == "pass"
+    assert report.overfit_check.reasons == ()
 
     rendered = render_backtest_report(report)
     assert "section=in_sample" in rendered
     assert "section=out_of_sample" in rendered
+    assert "section=recent" in rendered
     assert f"split_timestamp={bars[3].timestamp.isoformat()}" in rendered
+    assert f"recent_start_timestamp={bars[4].timestamp.isoformat()}" in rendered
+    assert "overfit_check_status=pass" in rendered
 
 
 def test_backtest_out_of_sample_uses_split_equity_for_carry_positions() -> None:
@@ -171,6 +180,54 @@ def test_backtest_config_rejects_invalid_in_sample_ratio() -> None:
             cost_model=BacktestCostModel(),
             in_sample_ratio=Decimal("1"),
         )
+
+
+def test_backtest_report_flags_overfit_risk_when_out_of_sample_reverses() -> None:
+    engine = BacktestEngine()
+    strategy = ScriptedStrategy(
+        [
+            SignalAction.BUY,
+            SignalAction.HOLD,
+            SignalAction.SELL,
+            SignalAction.BUY,
+            SignalAction.HOLD,
+            SignalAction.SELL,
+        ]
+    )
+    bars = _make_bars(
+        symbol="069500",
+        timeframe=Timeframe.DAY,
+        start="2026-04-10T15:30:00+09:00",
+        closes=[100, 110, 120, 130, 120, 110],
+    )
+
+    report = build_backtest_report(
+        engine.run(
+            strategy,
+            bars,
+            BacktestConfig(
+                initial_cash=Decimal("1000"),
+                cost_model=BacktestCostModel(),
+                in_sample_ratio=Decimal("0.5"),
+            ),
+        )
+    )
+
+    assert report.in_sample is not None
+    assert report.out_of_sample is not None
+    assert report.recent is not None
+    assert report.out_of_sample.total_return == Decimal("-0.15")
+    assert report.recent.total_return == Decimal("-0.15")
+    assert report.overfit_check.status == "warning"
+    assert report.overfit_check.reasons == (
+        "out_of_sample_return_reversal",
+        "recent_period_negative_return",
+    )
+
+    rendered = render_backtest_report(report)
+    assert "overfit_check_status=warning" in rendered
+    assert "overfit_check_reason=out_of_sample_return_reversal" in rendered
+    assert "overfit_check_reason=recent_period_negative_return" in rendered
 
 
 def _make_bars(
