@@ -16,9 +16,17 @@ from autotrade.broker.korea_investment import HttpRequest
 from autotrade.broker.korea_investment import HttpResponse
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerError
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
+from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
 from autotrade.broker.korea_investment import _split_account
+from autotrade.common import ExecutionFill
+from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
+from autotrade.common import OrderAmendRequest
 from autotrade.common import OrderCapacity
+from autotrade.common import OrderCancelRequest
+from autotrade.common import OrderRequest
+from autotrade.common import OrderSide
+from autotrade.common import OrderStatus
 from autotrade.common import Quote
 from autotrade.config.models import BrokerEnvironment
 from autotrade.config import BrokerSettings
@@ -311,6 +319,216 @@ def test_korea_investment_broker_reader_refreshes_expired_cached_token(
     assert transport.requests[1].headers["authorization"] == "Bearer fresh-token"
 
 
+def test_korea_investment_broker_trader_submits_limit_order_with_hashkey() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("POST", "/uapi/hashkey"): json_response({"HASH": "hash-123"}),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-cash"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {"ODNO": "order-1"},
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    order = trader.submit_order(
+        OrderRequest(
+            request_id="submit-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=3,
+            limit_price=Decimal("10000"),
+            requested_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert order == ExecutionOrder(
+        order_id="order-1",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=3,
+        limit_price=Decimal("10000"),
+        status=OrderStatus.ACKNOWLEDGED,
+        created_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        updated_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-cash",
+    ]
+    assert transport.requests[2].headers["hashkey"] == "hash-123"
+    assert transport.requests[2].headers["tr_id"] == "VTTC0802U"
+    assert transport.requests[2].headers["authorization"] == "Bearer token-123"
+    assert json.loads(transport.requests[2].body.decode("utf-8")) == {
+        "CANO": "12345678",
+        "ACNT_PRDT_CD": "01",
+        "PDNO": "069500",
+        "ORD_DVSN": "00",
+        "ORD_QTY": "3",
+        "ORD_UNPR": "10000",
+    }
+
+
+def test_korea_investment_broker_trader_amends_and_cancels_using_order_history() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): [
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [_order_history_row(order_id="order-1")],
+                    }
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [
+                            _order_history_row(
+                                order_id="order-2",
+                                origin_order_id="order-1",
+                                limit_price="10100",
+                            )
+                        ],
+                    }
+                ),
+            ],
+            ("POST", "/uapi/hashkey"): [
+                json_response({"HASH": "hash-amend"}),
+                json_response({"HASH": "hash-cancel"}),
+            ],
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): [
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {"ODNO": "order-2"},
+                    }
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {"ODNO": "order-2"},
+                    }
+                ),
+            ],
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 2, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id="order-1",
+            limit_price=Decimal("10100"),
+            requested_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    canceled = trader.cancel_order(
+        OrderCancelRequest(
+            request_id="cancel-1",
+            order_id="order-2",
+            requested_at=datetime(2026, 4, 11, 9, 2, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert amended == ExecutionOrder(
+        order_id="order-2",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=3,
+        limit_price=Decimal("10100"),
+        status=OrderStatus.ACKNOWLEDGED,
+        created_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        updated_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert canceled == ExecutionOrder(
+        order_id="order-2",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=3,
+        limit_price=Decimal("10100"),
+        status=OrderStatus.CANCELED,
+        created_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        updated_at=datetime(2026, 4, 11, 9, 2, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    amend_request = transport.requests[3]
+    cancel_request = transport.requests[6]
+    assert amend_request.headers["hashkey"] == "hash-amend"
+    assert cancel_request.headers["hashkey"] == "hash-cancel"
+    assert json.loads(amend_request.body.decode("utf-8")) == {
+        "CANO": "12345678",
+        "ACNT_PRDT_CD": "01",
+        "KRX_FWDG_ORD_ORGNO": "06010",
+        "ORGN_ODNO": "order-1",
+        "ORD_DVSN": "00",
+        "RVSE_CNCL_DVSN_CD": "01",
+        "ORD_QTY": "0",
+        "ORD_UNPR": "10100",
+        "QTY_ALL_ORD_YN": "Y",
+    }
+    assert json.loads(cancel_request.body.decode("utf-8")) == {
+        "CANO": "12345678",
+        "ACNT_PRDT_CD": "01",
+        "KRX_FWDG_ORD_ORGNO": "06010",
+        "ORGN_ODNO": "order-2",
+        "ORD_DVSN": "00",
+        "RVSE_CNCL_DVSN_CD": "02",
+        "ORD_QTY": "0",
+        "ORD_UNPR": "0",
+        "QTY_ALL_ORD_YN": "Y",
+    }
+
+
+def test_korea_investment_broker_trader_returns_aggregate_fill_snapshot() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        _order_history_row(
+                            order_id="order-1",
+                            filled_quantity="2",
+                            average_price="10050",
+                        )
+                    ],
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 3, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    fills = trader.get_fills("order-1")
+
+    assert fills == (
+        ExecutionFill(
+            fill_id="order-1:aggregate",
+            order_id="order-1",
+            symbol="069500",
+            quantity=2,
+            price=Decimal("10050"),
+            filled_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("account", "environment", "expected"),
     [
@@ -378,8 +596,17 @@ def json_response(payload: dict[str, object], status: int = 200) -> HttpResponse
 
 
 class RecordingTransport:
-    def __init__(self, responses: dict[tuple[str, str], HttpResponse]) -> None:
-        self._responses = responses
+    def __init__(
+        self,
+        responses: dict[
+            tuple[str, str],
+            HttpResponse | list[HttpResponse],
+        ],
+    ) -> None:
+        self._responses = {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in responses.items()
+        }
         self.requests: list[HttpRequest] = []
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
@@ -387,4 +614,38 @@ class RecordingTransport:
         key = (request.method, urlsplit(request.url).path)
         if key not in self._responses:
             raise AssertionError(f"unexpected request: {key}")
-        return self._responses[key]
+        response = self._responses[key]
+        if isinstance(response, list):
+            if not response:
+                raise AssertionError(f"missing scripted response for: {key}")
+            return response.pop(0)
+        return response
+
+
+def _order_history_row(
+    *,
+    order_id: str,
+    origin_order_id: str = "",
+    limit_price: str = "10000",
+    filled_quantity: str = "0",
+    average_price: str = "0",
+    canceled: str = "N",
+    rejected_quantity: str = "0",
+) -> dict[str, str]:
+    return {
+        "ord_dt": "20260411",
+        "ord_gno_brno": "06010",
+        "odno": order_id,
+        "orgn_odno": origin_order_id,
+        "sll_buy_dvsn_cd": "02",
+        "sll_buy_dvsn_cd_name": "매수",
+        "pdno": "069500",
+        "ord_qty": "3",
+        "ord_unpr": limit_price,
+        "ord_tmd": "090000" if order_id == "order-1" else "090100",
+        "tot_ccld_qty": filled_quantity,
+        "avg_prvs": average_price,
+        "cncl_yn": canceled,
+        "ord_dvsn_cd": "00",
+        "rjct_qty": rejected_quantity,
+    }

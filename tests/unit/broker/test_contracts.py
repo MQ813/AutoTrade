@@ -13,6 +13,7 @@ from autotrade.broker import BrokerTrader
 from autotrade.broker.korea_investment import HttpRequest
 from autotrade.broker.korea_investment import HttpResponse
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
+from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
 from autotrade.broker import normalize_holding
 from autotrade.broker import normalize_order_capacity
 from autotrade.broker import normalize_quote
@@ -159,6 +160,78 @@ def test_korea_investment_broker_reader_conforms_to_contract() -> None:
     )
 
 
+def test_korea_investment_broker_trader_conforms_to_contract() -> None:
+    trader = KoreaInvestmentBrokerTrader(
+        BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+        ),
+        transport=_ContractTransport(),
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert isinstance(trader, BrokerTrader)
+    assert isinstance(
+        trader.submit_order(
+            OrderRequest(
+                request_id="submit-1",
+                symbol="069500",
+                side=OrderSide.BUY,
+                quantity=3,
+                limit_price=Decimal("10000"),
+                requested_at=datetime(
+                    2026,
+                    4,
+                    11,
+                    9,
+                    0,
+                    tzinfo=ZoneInfo("Asia/Seoul"),
+                ),
+            )
+        ),
+        ExecutionOrder,
+    )
+    assert isinstance(
+        trader.amend_order(
+            OrderAmendRequest(
+                request_id="amend-1",
+                order_id="order-1",
+                limit_price=Decimal("10100"),
+                requested_at=datetime(
+                    2026,
+                    4,
+                    11,
+                    9,
+                    1,
+                    tzinfo=ZoneInfo("Asia/Seoul"),
+                ),
+            )
+        ),
+        ExecutionOrder,
+    )
+    assert isinstance(
+        trader.cancel_order(
+            OrderCancelRequest(
+                request_id="cancel-1",
+                order_id="order-2",
+                requested_at=datetime(
+                    2026,
+                    4,
+                    11,
+                    9,
+                    2,
+                    tzinfo=ZoneInfo("Asia/Seoul"),
+                ),
+            )
+        ),
+        ExecutionOrder,
+    )
+    assert isinstance(trader.get_fills("order-2"), tuple)
+
+
 def test_broker_trader_contract_returns_standard_models() -> None:
     trader = DummyBrokerTrader()
 
@@ -297,6 +370,7 @@ class DummyBrokerTrader:
 class _ContractTransport:
     def __init__(self) -> None:
         self.requests: list[HttpRequest] = []
+        self._order_history_calls = 0
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         self.requests.append(request)
@@ -353,6 +427,69 @@ class _ContractTransport:
                             "ord_psbl_cash": "133250",
                             "max_buy_qty": "13",
                         },
+                    },
+                ).encode("utf-8"),
+            )
+        if path == "/uapi/hashkey":
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps({"HASH": "hash-123"}).encode("utf-8"),
+            )
+        if path == "/uapi/domestic-stock/v1/trading/order-cash":
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "rt_cd": "0",
+                        "output": {"ODNO": "order-1"},
+                    },
+                ).encode("utf-8"),
+            )
+        if path == "/uapi/domestic-stock/v1/trading/order-rvsecncl":
+            order_id = "order-2"
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "rt_cd": "0",
+                        "output": {"ODNO": order_id},
+                    },
+                ).encode("utf-8"),
+            )
+        if path == "/uapi/domestic-stock/v1/trading/inquire-daily-ccld":
+            self._order_history_calls += 1
+            order_id = "order-1" if self._order_history_calls == 1 else "order-2"
+            origin_order_id = "" if self._order_history_calls == 1 else "order-1"
+            order_time = "090000" if self._order_history_calls == 1 else "090100"
+            order_price = "10000" if self._order_history_calls == 1 else "10100"
+            return HttpResponse(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "rt_cd": "0",
+                        "output1": [
+                            {
+                                "ord_dt": "20260411",
+                                "ord_gno_brno": "06010",
+                                "odno": order_id,
+                                "orgn_odno": origin_order_id,
+                                "sll_buy_dvsn_cd": "02",
+                                "sll_buy_dvsn_cd_name": "매수",
+                                "pdno": "069500",
+                                "ord_qty": "3",
+                                "ord_unpr": order_price,
+                                "ord_tmd": order_time,
+                                "tot_ccld_qty": "1",
+                                "avg_prvs": "10050",
+                                "cncl_yn": "N",
+                                "ord_dvsn_cd": "00",
+                                "rjct_qty": "0",
+                            }
+                        ],
                     },
                 ).encode("utf-8"),
             )
