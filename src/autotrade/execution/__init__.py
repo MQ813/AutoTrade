@@ -12,6 +12,12 @@ from autotrade.execution.live import OrderExecutionEngine
 from autotrade.execution.live import OrderExecutionSnapshot
 from autotrade.execution.live import RetryableExecutionError
 from autotrade.execution.live import UnknownExecutionOrderError
+from autotrade.execution.replay import ReplayLogEntry
+from autotrade.execution.replay import ReplaySession
+from autotrade.execution.replay import ReplaySessionSnapshot
+from autotrade.execution.replay import render_replay_log
+from autotrade.execution.replay import restore_replay_session_from_log
+from autotrade.execution.replay import write_replay_log
 
 __all__ = [
     "BacktestConfig",
@@ -26,6 +32,12 @@ __all__ = [
     "InvalidExecutionOrderStateError",
     "OrderExecutionEngine",
     "OrderExecutionSnapshot",
+    "ReplayLogEntry",
+    "ReplaySession",
+    "ReplaySessionSnapshot",
     "RetryableExecutionError",
     "UnknownExecutionOrderError",
+    "render_replay_log",
+    "restore_replay_session_from_log",
+    "write_replay_log",
 ]

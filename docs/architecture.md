@@ -24,6 +24,22 @@
 - 스냅샷은 종가 기준으로 현금, 평균단가, 평가금액, 실현 손익, 평가 손익, 총 손익, 총 자산을 계산합니다.
 - `execution.backtest`는 주문 신호와 체결 시점 제어만 담당하고, 잔고/평단/손익 계산은 `portfolio` 모듈로 위임합니다.
 
+## Broker
+
+`src/autotrade/broker/paper.py`
+
+- `PaperBroker`는 `BrokerReader`와 `BrokerTrader`를 함께 구현하는 결정적 모의 브로커입니다.
+- 현재 바(`Bar`)를 기준으로 현재가, 보유 수량, 주문 가능 수량을 계산하고 지정가 주문의 접수/정정/취소/체결을 재현합니다.
+- 스냅샷(`PaperBrokerSnapshot`)을 통해 보유 상태, 주문 상태, 현재 시장 바를 복구할 수 있습니다.
+
+## Execution Replay
+
+`src/autotrade/execution/replay.py`
+
+- `ReplaySession`은 과거 바 시퀀스를 따라 `scheduler` 작업을 재실행하는 운영 리플레이 경계입니다.
+- 세션 스냅샷은 모의 브로커 상태와 스케줄러 실행 상태를 함께 저장해 재시작 테스트에 사용합니다.
+- 로그 엔트리는 각 리플레이 시점의 종가, 실행된 작업, 세션 스냅샷을 담아 마지막 로그만으로 상태 복구 가능 여부를 검증할 수 있게 합니다.
+
 ## Scheduler
 
 `src/autotrade/scheduler/runtime.py`
