@@ -121,14 +121,22 @@ def test_load_settings_reads_risk_settings(tmp_path: Path) -> None:
             AUTOTRADE_RISK_MAX_POSITION_WEIGHT="0.35",
             AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS="2",
             AUTOTRADE_RISK_MAX_LOSS="150000",
+            AUTOTRADE_RISK_MAX_DRAWDOWN="0.12",
+            AUTOTRADE_RISK_MAX_ORDERS_PER_DAY="5",
             AUTOTRADE_RISK_TRADING_HALTED="true",
+            AUTOTRADE_RISK_EMERGENCY_STOP="true",
+            AUTOTRADE_RISK_CANCEL_UNFILLED_ON_MARKET_CLOSE="false",
         ),
     )
 
     assert settings.risk.max_position_weight == Decimal("0.35")
     assert settings.risk.max_concurrent_holdings == 2
     assert settings.risk.max_loss == Decimal("150000")
+    assert settings.risk.max_drawdown == Decimal("0.12")
+    assert settings.risk.max_orders_per_day == 5
     assert settings.risk.trading_halted is True
+    assert settings.risk.emergency_stop is True
+    assert settings.risk.cancel_unfilled_orders_on_market_close is False
 
 
 def test_load_settings_rejects_invalid_broker_environment(tmp_path: Path) -> None:
@@ -146,7 +154,11 @@ def test_load_settings_rejects_invalid_broker_environment(tmp_path: Path) -> Non
     [
         ("AUTOTRADE_RISK_MAX_POSITION_WEIGHT", "abc"),
         ("AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS", "1.5"),
+        ("AUTOTRADE_RISK_MAX_DRAWDOWN", "abc"),
+        ("AUTOTRADE_RISK_MAX_ORDERS_PER_DAY", "1.5"),
         ("AUTOTRADE_RISK_TRADING_HALTED", "maybe"),
+        ("AUTOTRADE_RISK_EMERGENCY_STOP", "maybe"),
+        ("AUTOTRADE_RISK_CANCEL_UNFILLED_ON_MARKET_CLOSE", "maybe"),
     ],
 )
 def test_load_settings_rejects_invalid_risk_values(

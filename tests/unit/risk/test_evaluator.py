@@ -9,6 +9,7 @@ from autotrade.risk import RiskSettings
 from autotrade.risk import RiskViolationCode
 from autotrade.risk import calculate_max_buy_quantity
 from autotrade.risk import evaluate_buy_order
+from autotrade.risk import should_cancel_unfilled_orders
 
 
 def test_evaluate_buy_order_allows_order_within_limits() -> None:
@@ -16,6 +17,8 @@ def test_evaluate_buy_order_allows_order_within_limits() -> None:
         max_position_weight=Decimal("0.3"),
         max_concurrent_holdings=3,
         max_loss=Decimal("200"),
+        max_drawdown=Decimal("0.15"),
+        max_orders_per_day=3,
     )
     snapshot = RiskAccountSnapshot(
         holdings=(
@@ -28,6 +31,8 @@ def test_evaluate_buy_order_allows_order_within_limits() -> None:
         ),
         cash_available=Decimal("890"),
         session_start_equity=Decimal("1000"),
+        peak_equity=Decimal("1000"),
+        orders_submitted_today=1,
     )
     order = ProposedBuyOrder(
         symbol="114800",
@@ -42,6 +47,7 @@ def test_evaluate_buy_order_allows_order_within_limits() -> None:
     assert result.current_equity == Decimal("1000")
     assert result.projected_position_weight == Decimal("0.1")
     assert result.loss_amount == Decimal("0")
+    assert result.drawdown == Decimal("0")
     assert result.violations == ()
 
 
@@ -67,6 +73,30 @@ def test_evaluate_buy_order_caps_quantity_when_position_weight_would_be_exceeded
     assert [violation.code for violation in result.violations] == [
         RiskViolationCode.MAX_POSITION_WEIGHT_EXCEEDED,
     ]
+    assert result.should_halt_trading is False
+
+
+def test_evaluate_buy_order_caps_quantity_when_cash_is_insufficient() -> None:
+    settings = RiskSettings(max_position_weight=Decimal("0.8"))
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("120"),
+        total_equity=Decimal("1000"),
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("50"),
+        quantity=3,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 2
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.INSUFFICIENT_CASH,
+    ]
+    assert result.should_halt_trading is False
 
 
 def test_evaluate_buy_order_blocks_new_symbol_when_holding_limit_is_reached() -> None:
@@ -151,6 +181,7 @@ def test_evaluate_buy_order_blocks_when_loss_limit_is_reached() -> None:
     assert [violation.code for violation in result.violations] == [
         RiskViolationCode.LOSS_LIMIT_REACHED,
     ]
+    assert result.should_halt_trading is True
 
 
 def test_evaluate_buy_order_blocks_when_loss_limit_has_no_baseline_equity() -> None:
@@ -172,6 +203,77 @@ def test_evaluate_buy_order_blocks_when_loss_limit_has_no_baseline_equity() -> N
     assert [violation.code for violation in result.violations] == [
         RiskViolationCode.MISSING_SESSION_START_EQUITY,
     ]
+    assert result.should_halt_trading is True
+
+
+def test_evaluate_buy_order_blocks_when_drawdown_limit_is_reached() -> None:
+    settings = RiskSettings(max_drawdown=Decimal("0.1"))
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("900"),
+        total_equity=Decimal("900"),
+        peak_equity=Decimal("1000"),
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("50"),
+        quantity=1,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 0
+    assert result.drawdown == Decimal("0.1")
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.DRAWDOWN_LIMIT_REACHED,
+    ]
+    assert result.should_halt_trading is True
+
+
+def test_evaluate_buy_order_blocks_when_drawdown_limit_has_no_peak_equity() -> None:
+    settings = RiskSettings(max_drawdown=Decimal("0.1"))
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("1000"),
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("50"),
+        quantity=1,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 0
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.MISSING_PEAK_EQUITY,
+    ]
+    assert result.should_halt_trading is True
+
+
+def test_evaluate_buy_order_blocks_when_daily_order_limit_is_reached() -> None:
+    settings = RiskSettings(max_orders_per_day=3)
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("1000"),
+        orders_submitted_today=3,
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("50"),
+        quantity=1,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 0
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.ORDER_LIMIT_REACHED,
+    ]
+    assert result.should_halt_trading is False
 
 
 def test_evaluate_buy_order_blocks_when_trading_is_halted() -> None:
@@ -193,6 +295,29 @@ def test_evaluate_buy_order_blocks_when_trading_is_halted() -> None:
     assert [violation.code for violation in result.violations] == [
         RiskViolationCode.TRADING_HALTED,
     ]
+    assert result.should_halt_trading is True
+
+
+def test_evaluate_buy_order_blocks_when_emergency_stop_is_active() -> None:
+    settings = RiskSettings(emergency_stop=True)
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("1000"),
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("50"),
+        quantity=1,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 0
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.EMERGENCY_STOP_ACTIVE,
+    ]
+    assert result.should_halt_trading is True
 
 
 def test_calculate_max_buy_quantity_uses_existing_symbol_exposure() -> None:
@@ -217,3 +342,46 @@ def test_calculate_max_buy_quantity_uses_existing_symbol_exposure() -> None:
     )
 
     assert max_quantity == 2
+
+
+def test_calculate_max_buy_quantity_respects_cash_limit() -> None:
+    settings = RiskSettings(max_position_weight=Decimal("0.8"))
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("120"),
+        total_equity=Decimal("1000"),
+    )
+
+    max_quantity = calculate_max_buy_quantity(
+        settings=settings,
+        snapshot=snapshot,
+        symbol="114800",
+        order_price=Decimal("50"),
+    )
+
+    assert max_quantity == 2
+
+
+def test_should_cancel_unfilled_orders_only_near_market_close() -> None:
+    settings = RiskSettings(cancel_unfilled_orders_on_market_close=True)
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("1000"),
+        unfilled_order_count=2,
+        market_closing=True,
+    )
+
+    assert should_cancel_unfilled_orders(settings, snapshot) is True
+
+    assert (
+        should_cancel_unfilled_orders(
+            settings,
+            RiskAccountSnapshot(
+                holdings=(),
+                cash_available=Decimal("1000"),
+                unfilled_order_count=2,
+                market_closing=False,
+            ),
+        )
+        is False
+    )

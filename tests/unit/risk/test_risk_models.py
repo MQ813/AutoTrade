@@ -13,7 +13,11 @@ def test_risk_settings_accepts_defaults() -> None:
     assert settings.max_position_weight == Decimal("0.2")
     assert settings.max_concurrent_holdings == 3
     assert settings.max_loss is None
+    assert settings.max_drawdown is None
+    assert settings.max_orders_per_day is None
     assert settings.trading_halted is False
+    assert settings.emergency_stop is False
+    assert settings.cancel_unfilled_orders_on_market_close is True
 
 
 @pytest.mark.parametrize(
@@ -34,6 +38,18 @@ def test_risk_settings_accepts_defaults() -> None:
         (
             {"max_loss": Decimal("-1")},
             "max_loss",
+        ),
+        (
+            {"max_drawdown": Decimal("0")},
+            "max_drawdown",
+        ),
+        (
+            {"max_drawdown": Decimal("1.1")},
+            "max_drawdown",
+        ),
+        (
+            {"max_orders_per_day": 0},
+            "max_orders_per_day",
         ),
     ],
 )

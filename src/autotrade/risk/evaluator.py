@@ -28,10 +28,25 @@ def evaluate_buy_order(
     )
     approved_quantity = order.quantity
     violations: list[RiskViolation] = []
+    should_halt_trading = False
     loss_amount = _calculate_loss_amount(
         session_start_equity=snapshot.session_start_equity,
         current_equity=current_equity,
     )
+    drawdown = _calculate_drawdown(
+        peak_equity=snapshot.peak_equity,
+        current_equity=current_equity,
+    )
+
+    if settings.emergency_stop:
+        violations.append(
+            RiskViolation(
+                code=RiskViolationCode.EMERGENCY_STOP_ACTIVE,
+                message="emergency stop is active",
+            ),
+        )
+        approved_quantity = 0
+        should_halt_trading = True
 
     if settings.trading_halted:
         violations.append(
@@ -41,6 +56,7 @@ def evaluate_buy_order(
             ),
         )
         approved_quantity = 0
+        should_halt_trading = True
 
     if settings.max_loss is not None:
         if snapshot.session_start_equity is None:
@@ -51,6 +67,7 @@ def evaluate_buy_order(
                 ),
             )
             approved_quantity = 0
+            should_halt_trading = True
         elif loss_amount is not None and loss_amount >= settings.max_loss:
             violations.append(
                 RiskViolation(
@@ -62,6 +79,46 @@ def evaluate_buy_order(
                 ),
             )
             approved_quantity = 0
+            should_halt_trading = True
+
+    if settings.max_drawdown is not None:
+        if snapshot.peak_equity is None:
+            violations.append(
+                RiskViolation(
+                    code=RiskViolationCode.MISSING_PEAK_EQUITY,
+                    message="peak_equity is required when max_drawdown is configured",
+                ),
+            )
+            approved_quantity = 0
+            should_halt_trading = True
+        elif drawdown is not None and drawdown >= settings.max_drawdown:
+            violations.append(
+                RiskViolation(
+                    code=RiskViolationCode.DRAWDOWN_LIMIT_REACHED,
+                    message=(
+                        "current drawdown exceeds the configured max_drawdown "
+                        f"({drawdown} >= {settings.max_drawdown})"
+                    ),
+                ),
+            )
+            approved_quantity = 0
+            should_halt_trading = True
+
+    if (
+        settings.max_orders_per_day is not None
+        and snapshot.orders_submitted_today >= settings.max_orders_per_day
+    ):
+        violations.append(
+            RiskViolation(
+                code=RiskViolationCode.ORDER_LIMIT_REACHED,
+                message=(
+                    "orders submitted today reached max_orders_per_day "
+                    f"({snapshot.orders_submitted_today} >= "
+                    f"{settings.max_orders_per_day})"
+                ),
+            ),
+        )
+        approved_quantity = 0
 
     if (
         approved_quantity > 0
@@ -80,12 +137,22 @@ def evaluate_buy_order(
         approved_quantity = 0
 
     if approved_quantity > 0:
-        max_quantity_by_weight = calculate_max_buy_quantity(
+        max_quantity_by_weight = _calculate_max_buy_quantity_by_weight(
             settings=settings,
             snapshot=snapshot,
             symbol=order.symbol,
             order_price=order.price,
         )
+        max_quantity_by_cash = _calculate_max_buy_quantity_by_cash(
+            snapshot=snapshot,
+            order_price=order.price,
+        )
+        approved_quantity = min(
+            approved_quantity,
+            max_quantity_by_weight,
+            max_quantity_by_cash,
+        )
+
         if order.quantity > max_quantity_by_weight:
             violations.append(
                 RiskViolation(
@@ -96,7 +163,16 @@ def evaluate_buy_order(
                     ),
                 ),
             )
-            approved_quantity = max_quantity_by_weight
+        if order.quantity > max_quantity_by_cash:
+            violations.append(
+                RiskViolation(
+                    code=RiskViolationCode.INSUFFICIENT_CASH,
+                    message=(
+                        "requested quantity would exceed available cash "
+                        f"({snapshot.cash_available})"
+                    ),
+                ),
+            )
 
     return RiskCheck(
         allowed=not violations and approved_quantity == order.quantity,
@@ -105,10 +181,44 @@ def evaluate_buy_order(
         projected_position_weight=requested_position_weight,
         violations=tuple(violations),
         loss_amount=loss_amount,
+        drawdown=drawdown,
+        should_halt_trading=should_halt_trading,
     )
 
 
 def calculate_max_buy_quantity(
+    *,
+    settings: RiskSettings,
+    snapshot: RiskAccountSnapshot,
+    symbol: str,
+    order_price: Decimal,
+) -> int:
+    return min(
+        _calculate_max_buy_quantity_by_weight(
+            settings=settings,
+            snapshot=snapshot,
+            symbol=symbol,
+            order_price=order_price,
+        ),
+        _calculate_max_buy_quantity_by_cash(
+            snapshot=snapshot,
+            order_price=order_price,
+        ),
+    )
+
+
+def should_cancel_unfilled_orders(
+    settings: RiskSettings,
+    snapshot: RiskAccountSnapshot,
+) -> bool:
+    return (
+        settings.cancel_unfilled_orders_on_market_close
+        and snapshot.market_closing
+        and snapshot.unfilled_order_count > 0
+    )
+
+
+def _calculate_max_buy_quantity_by_weight(
     *,
     settings: RiskSettings,
     snapshot: RiskAccountSnapshot,
@@ -125,6 +235,16 @@ def calculate_max_buy_quantity(
     if remaining_position_value <= ZERO:
         return 0
     return int(remaining_position_value / order_price)
+
+
+def _calculate_max_buy_quantity_by_cash(
+    *,
+    snapshot: RiskAccountSnapshot,
+    order_price: Decimal,
+) -> int:
+    if snapshot.cash_available <= ZERO:
+        return 0
+    return int(snapshot.cash_available / order_price)
 
 
 def _resolve_total_equity(snapshot: RiskAccountSnapshot) -> Decimal:
@@ -190,3 +310,15 @@ def _calculate_loss_amount(
     if session_start_equity is None:
         return None
     return max(ZERO, session_start_equity - current_equity)
+
+
+def _calculate_drawdown(
+    *,
+    peak_equity: Decimal | None,
+    current_equity: Decimal,
+) -> Decimal | None:
+    if peak_equity is None:
+        return None
+    if current_equity >= peak_equity:
+        return ZERO
+    return (peak_equity - current_equity) / peak_equity
