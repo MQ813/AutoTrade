@@ -34,7 +34,9 @@ from autotrade.config.models import BrokerSettings
 PAPER_BASE_URL: Final[str] = "https://openapivts.koreainvestment.com:29443"
 LIVE_BASE_URL: Final[str] = "https://openapi.koreainvestment.com:9443"
 KST: Final[ZoneInfo] = ZoneInfo("Asia/Seoul")
-LIVE_ACCOUNT_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{8}-\d{2}$|^\d{10}$")
+LIVE_ACCOUNT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^\d{8}$|^\d{8}-\d{2}$|^\d{10}$"
+)
 PAPER_ACCOUNT_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^\d{8}$|^\d{8}-\d{2}$|^\d{10}$"
 )
@@ -625,7 +627,7 @@ def _split_account(account: str, *, environment: str) -> tuple[str, str]:
                 "paper account must be 8 digits, or 8 digits + 2 digits with optional hyphen",
             )
         raise KoreaInvestmentBrokerError(
-            "live account must be 8 digits + 2 digits, with optional hyphen",
+            "live account must be 8 digits, or 8 digits + 2 digits with optional hyphen",
         )
 
     if "-" in normalized:

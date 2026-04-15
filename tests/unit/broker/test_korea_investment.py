@@ -317,6 +317,7 @@ def test_korea_investment_broker_reader_refreshes_expired_cached_token(
         ("12345678", "paper", ("12345678", "01")),
         ("12345678-01", "paper", ("12345678", "01")),
         ("1234567801", "paper", ("12345678", "01")),
+        ("12345678", "live", ("12345678", "01")),
         ("12345678-01", "live", ("12345678", "01")),
         ("1234567801", "live", ("12345678", "01")),
     ],
@@ -342,7 +343,11 @@ def test_split_account_rejects_invalid_format() -> None:
         ("12345678-AB", "paper", "paper account"),
         ("12345678901", "paper", "paper account"),
         ("12345678--01", "paper", "paper account"),
-        ("12345678", "live", "live account"),
+        ("1234567", "live", "live account"),
+        ("12345678-1", "live", "live account"),
+        ("12345678-AB", "live", "live account"),
+        ("12345678901", "live", "live account"),
+        ("12345678--01", "live", "live account"),
     ],
 )
 def test_split_account_rejects_invalid_digit_structure(
