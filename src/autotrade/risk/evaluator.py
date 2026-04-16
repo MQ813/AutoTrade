@@ -143,6 +143,13 @@ def evaluate_buy_order(
             symbol=order.symbol,
             order_price=order.price,
         )
+        max_quantity_by_operating_capital = (
+            _calculate_max_buy_quantity_by_operating_capital(
+                settings=settings,
+                snapshot=snapshot,
+                order_price=order.price,
+            )
+        )
         max_quantity_by_cash = _calculate_max_buy_quantity_by_cash(
             snapshot=snapshot,
             order_price=order.price,
@@ -150,6 +157,7 @@ def evaluate_buy_order(
         approved_quantity = min(
             approved_quantity,
             max_quantity_by_weight,
+            max_quantity_by_operating_capital,
             max_quantity_by_cash,
         )
 
@@ -160,6 +168,19 @@ def evaluate_buy_order(
                     message=(
                         "requested quantity would exceed max_position_weight "
                         f"({settings.max_position_weight})"
+                    ),
+                ),
+            )
+        if (
+            settings.max_operating_capital is not None
+            and order.quantity > max_quantity_by_operating_capital
+        ):
+            violations.append(
+                RiskViolation(
+                    code=RiskViolationCode.OPERATING_CAPITAL_LIMIT_EXCEEDED,
+                    message=(
+                        "requested quantity would exceed max_operating_capital "
+                        f"({settings.max_operating_capital})"
                     ),
                 ),
             )
@@ -198,6 +219,11 @@ def calculate_max_buy_quantity(
             settings=settings,
             snapshot=snapshot,
             symbol=symbol,
+            order_price=order_price,
+        ),
+        _calculate_max_buy_quantity_by_operating_capital(
+            settings=settings,
+            snapshot=snapshot,
             order_price=order_price,
         ),
         _calculate_max_buy_quantity_by_cash(
@@ -245,6 +271,34 @@ def _calculate_max_buy_quantity_by_cash(
     if snapshot.cash_available <= ZERO:
         return 0
     return int(snapshot.cash_available / order_price)
+
+
+def _calculate_max_buy_quantity_by_operating_capital(
+    *,
+    settings: RiskSettings,
+    snapshot: RiskAccountSnapshot,
+    order_price: Decimal,
+) -> int:
+    if settings.max_operating_capital is None:
+        return _calculate_max_buy_quantity_by_cash(
+            snapshot=snapshot,
+            order_price=order_price,
+        )
+
+    current_position_value = sum(
+        (_holding_market_value(holding) for holding in snapshot.holdings),
+        start=ZERO,
+    )
+    remaining_operating_capital = (
+        settings.max_operating_capital - current_position_value
+    )
+    if remaining_operating_capital <= ZERO:
+        return 0
+
+    effective_cash = min(snapshot.cash_available, remaining_operating_capital)
+    if effective_cash <= ZERO:
+        return 0
+    return int(effective_cash / order_price)
 
 
 def _resolve_total_equity(snapshot: RiskAccountSnapshot) -> Decimal:

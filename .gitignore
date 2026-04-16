@@ -8,3 +8,6 @@ __pycache__/
 .python-version
 .venv/
 ~$*.docx
+test_paper.sh
+test_paper.log
+logs/paper_*/

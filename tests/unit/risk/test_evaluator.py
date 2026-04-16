@@ -362,6 +362,66 @@ def test_calculate_max_buy_quantity_respects_cash_limit() -> None:
     assert max_quantity == 2
 
 
+def test_evaluate_buy_order_caps_quantity_when_operating_capital_is_limited() -> None:
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.9"),
+        max_operating_capital=Decimal("300"),
+    )
+    snapshot = RiskAccountSnapshot(
+        holdings=(
+            Holding(
+                symbol="069500",
+                quantity=2,
+                average_price=Decimal("95"),
+                current_price=Decimal("100"),
+            ),
+        ),
+        cash_available=Decimal("1000"),
+        total_equity=Decimal("1200"),
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("50"),
+        quantity=3,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 2
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.OPERATING_CAPITAL_LIMIT_EXCEEDED,
+    ]
+
+
+def test_calculate_max_buy_quantity_respects_operating_capital_limit() -> None:
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.9"),
+        max_operating_capital=Decimal("300"),
+    )
+    snapshot = RiskAccountSnapshot(
+        holdings=(
+            Holding(
+                symbol="069500",
+                quantity=2,
+                average_price=Decimal("95"),
+                current_price=Decimal("100"),
+            ),
+        ),
+        cash_available=Decimal("1000"),
+        total_equity=Decimal("1200"),
+    )
+
+    max_quantity = calculate_max_buy_quantity(
+        settings=settings,
+        snapshot=snapshot,
+        symbol="114800",
+        order_price=Decimal("50"),
+    )
+
+    assert max_quantity == 2
+
+
 def test_should_cancel_unfilled_orders_only_near_market_close() -> None:
     settings = RiskSettings(cancel_unfilled_orders_on_market_close=True)
     snapshot = RiskAccountSnapshot(

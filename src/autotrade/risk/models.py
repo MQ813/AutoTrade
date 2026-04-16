@@ -42,6 +42,7 @@ class RiskSettings:
     max_loss: Decimal | None = None
     max_drawdown: Decimal | None = None
     max_orders_per_day: int | None = None
+    max_operating_capital: Decimal | None = None
     trading_halted: bool = False
     emergency_stop: bool = False
     cancel_unfilled_orders_on_market_close: bool = True
@@ -63,6 +64,11 @@ class RiskSettings:
             raise ValueError("max_drawdown must be between 0 and 1 inclusive")
         if self.max_orders_per_day is not None:
             _require_positive_int("max_orders_per_day", self.max_orders_per_day)
+        if self.max_operating_capital is not None:
+            _require_positive_decimal(
+                "max_operating_capital",
+                self.max_operating_capital,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +123,7 @@ class RiskViolationCode(StrEnum):
     LOSS_LIMIT_REACHED = "loss_limit_reached"
     DRAWDOWN_LIMIT_REACHED = "drawdown_limit_reached"
     ORDER_LIMIT_REACHED = "order_limit_reached"
+    OPERATING_CAPITAL_LIMIT_EXCEEDED = "operating_capital_limit_exceeded"
     MAX_CONCURRENT_HOLDINGS_EXCEEDED = "max_concurrent_holdings_exceeded"
     MAX_POSITION_WEIGHT_EXCEEDED = "max_position_weight_exceeded"
     INSUFFICIENT_CASH = "insufficient_cash"

@@ -160,6 +160,10 @@ def _load_risk_settings(environment: Mapping[str, str]) -> RiskSettings:
             environment,
             "AUTOTRADE_RISK_MAX_ORDERS_PER_DAY",
         ),
+        max_operating_capital=_parse_optional_decimal_setting(
+            environment,
+            "AUTOTRADE_RISK_MAX_OPERATING_CAPITAL",
+        ),
         trading_halted=_parse_bool_setting(
             _read_optional_value(
                 environment,

@@ -5,6 +5,13 @@
 - `scheduler`: 장 시작, 장중, 장마감 작업을 KRX 정규장 캘린더 기준으로 실행합니다.
 - `report`: 실행 결과를 운영 로그, 일일 리포트, 알림 메시지로 변환합니다.
 
+## 소액 실전 운영 기준
+
+- 실전 환경에서는 `AUTOTRADE_BROKER_ENV=live`와 함께 `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`을 명시해 자동매매가 사용할 최대 운영 자금을 제한합니다.
+- 주문/체결 알림은 `report` 모듈의 `build_order_alert`, `build_fill_alert`, `publish_order_alert`, `publish_fill_alert`로 생성합니다.
+- 일일 점검 체크리스트는 `python tools/daily_inspection.py`로 생성하고, 주간 리뷰 템플릿은 `python tools/weekly_review.py`로 생성합니다.
+- 위 스크립트는 `AUTOTRADE_LOG_DIR` 아래에 텍스트 산출물을 남기며, 실제 운영 실행기나 외부 알림 채널은 상위 orchestration에서 연결합니다.
+
 ## 장 시작 전
 
 - 설정과 환경변수를 확인합니다.
@@ -32,3 +39,5 @@
 - 실행 로그: 작업별 phase, 예정 시각, 성공/실패, 상세 메시지를 저장합니다.
 - 일일 리포트: 장 시작, 장중, 장마감별 작업 수와 실패 수를 요약합니다.
 - 알림: 실패가 있으면 `error`, 실행이 없으면 `warning`, 전부 성공이면 `info` 수준으로 발행합니다.
+- 일일 점검 리포트: 장 시작 전, 장중, 장마감 후 점검 항목을 `passed/failed/pending` 상태로 기록합니다.
+- 주간 리뷰 문서: 일일 실행 결과와 점검 상태를 주간 단위로 요약하고, 운영 회고 프롬프트를 남깁니다.
