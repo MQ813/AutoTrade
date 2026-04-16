@@ -193,6 +193,102 @@ def test_run_read_only_smoke_records_http_error_details(tmp_path) -> None:
     assert "EGW00123 - token blocked" in rendered
 
 
+def test_run_read_only_smoke_retries_kis_rate_limit_errors(tmp_path) -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345",
+                    },
+                },
+            ),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-balance"): [
+                json_response(
+                    {
+                        "msg_cd": "EGW00201",
+                        "msg1": "초당 거래건수를 초과하였습니다.",
+                    },
+                    status=500,
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [],
+                    },
+                ),
+            ],
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            ): [
+                json_response(
+                    {
+                        "msg_cd": "EGW00201",
+                        "msg1": "초당 거래건수를 초과하였습니다.",
+                    },
+                    status=500,
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "ord_psbl_cash": "133250",
+                            "nrcvb_buy_qty": "13",
+                        },
+                    },
+                ),
+            ],
+        },
+    )
+    settings = AppSettings(
+        broker=BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+        ),
+        target_symbols=("069500",),
+        log_dir=tmp_path / "logs",
+    )
+    fixed_now = datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    sleeps: list[float] = []
+
+    report = run_read_only_smoke(
+        settings,
+        transport=transport,
+        clock=lambda: fixed_now,
+        sleep=sleeps.append,
+    )
+
+    assert report.success is True
+    assert sleeps == [1.1, 1.1]
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/uapi/domestic-stock/v1/trading/inquire-balance",
+        "/uapi/domestic-stock/v1/trading/inquire-balance",
+        "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+        "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+    ]
+    rendered = render_smoke_report(report)
+    assert (
+        "step=get_holdings status=retry "
+        "detail=attempt=2 delay_seconds=1.1 error=HTTP 500"
+    ) in rendered
+    assert (
+        "step=get_order_capacity status=retry "
+        "detail=attempt=2 delay_seconds=1.1 error=HTTP 500"
+    ) in rendered
+
+
 def json_response(payload: dict[str, object], status: int = 200) -> HttpResponse:
     return HttpResponse(
         status=status,
@@ -202,8 +298,17 @@ def json_response(payload: dict[str, object], status: int = 200) -> HttpResponse
 
 
 class RecordingTransport:
-    def __init__(self, responses: dict[tuple[str, str], HttpResponse]) -> None:
-        self._responses = responses
+    def __init__(
+        self,
+        responses: dict[
+            tuple[str, str],
+            HttpResponse | list[HttpResponse],
+        ],
+    ) -> None:
+        self._responses = {
+            key: value if isinstance(value, list) else [value]
+            for key, value in responses.items()
+        }
         self.requests: list[HttpRequest] = []
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
@@ -211,4 +316,7 @@ class RecordingTransport:
         key = (request.method, urlsplit(request.url).path)
         if key not in self._responses:
             raise AssertionError(f"unexpected request: {key}")
-        return self._responses[key]
+        responses = self._responses[key]
+        if not responses:
+            raise AssertionError(f"no remaining response for request: {key}")
+        return responses.pop(0)

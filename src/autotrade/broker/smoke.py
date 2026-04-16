@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
-from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from autotrade.broker.korea_investment import HttpTransport
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
@@ -12,6 +14,10 @@ from autotrade.common import Holding
 from autotrade.common import OrderCapacity
 from autotrade.common import Quote
 from autotrade.config.models import AppSettings
+
+_T = TypeVar("_T")
+_KIS_RATE_LIMIT_ERROR_CODE = "EGW00201"
+_SMOKE_RETRY_DELAYS_SECONDS = (1.1, 1.3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,8 +45,10 @@ def run_read_only_smoke(
     *,
     transport: HttpTransport | None = None,
     clock: Callable[[], datetime] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> SmokeReport:
     now = clock or (lambda: datetime.now(timezone.utc))
+    resolved_sleep = sleep or time.sleep
     started_at = now()
     target_symbol = settings.target_symbols[0]
     broker = KoreaInvestmentBrokerReader(
@@ -57,10 +65,13 @@ def run_read_only_smoke(
     order_capacity: OrderCapacity | None = None
 
     try:
-        steps.append(
-            SmokeStep(name="get_quote", status="start", detail=target_symbol),
+        quote = _run_smoke_step(
+            "get_quote",
+            detail=target_symbol,
+            operation=lambda: broker.get_quote(target_symbol),
+            steps=steps,
+            sleep=resolved_sleep,
         )
-        quote = broker.get_quote(target_symbol)
         steps.append(
             SmokeStep(
                 name="get_quote",
@@ -69,10 +80,12 @@ def run_read_only_smoke(
             ),
         )
 
-        steps.append(
-            SmokeStep(name="get_holdings", status="start"),
+        holdings = _run_smoke_step(
+            "get_holdings",
+            operation=broker.get_holdings,
+            steps=steps,
+            sleep=resolved_sleep,
         )
-        holdings = broker.get_holdings()
         steps.append(
             SmokeStep(
                 name="get_holdings",
@@ -81,14 +94,13 @@ def run_read_only_smoke(
             ),
         )
 
-        steps.append(
-            SmokeStep(
-                name="get_order_capacity",
-                status="start",
-                detail=f"{quote.symbol}:{quote.price}",
-            ),
+        order_capacity = _run_smoke_step(
+            "get_order_capacity",
+            detail=f"{quote.symbol}:{quote.price}",
+            operation=lambda: broker.get_order_capacity(quote.symbol, quote.price),
+            steps=steps,
+            sleep=resolved_sleep,
         )
-        order_capacity = broker.get_order_capacity(quote.symbol, quote.price)
         steps.append(
             SmokeStep(
                 name="get_order_capacity",
@@ -134,6 +146,43 @@ def run_read_only_smoke(
         success=success,
         failure=failure,
     )
+
+
+def _run_smoke_step(
+    step_name: str,
+    *,
+    operation: Callable[[], _T],
+    steps: list[SmokeStep],
+    sleep: Callable[[float], None],
+    detail: str | None = None,
+) -> _T:
+    steps.append(SmokeStep(name=step_name, status="start", detail=detail))
+    for attempt, delay_seconds in enumerate(
+        _SMOKE_RETRY_DELAYS_SECONDS,
+        start=1,
+    ):
+        try:
+            return operation()
+        except Exception as error:
+            if not _is_retryable_rate_limit_error(error):
+                raise
+            steps.append(
+                SmokeStep(
+                    name=step_name,
+                    status="retry",
+                    detail=(
+                        f"attempt={attempt + 1} "
+                        f"delay_seconds={delay_seconds:.1f} "
+                        f"error={error}"
+                    ),
+                )
+            )
+            sleep(delay_seconds)
+    return operation()
+
+
+def _is_retryable_rate_limit_error(error: Exception) -> bool:
+    return _KIS_RATE_LIMIT_ERROR_CODE in str(error)
 
 
 def render_smoke_report(report: SmokeReport) -> str:

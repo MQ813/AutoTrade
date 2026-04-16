@@ -192,6 +192,35 @@ def test_cancel_order_rejects_filled_order() -> None:
         )
 
 
+def test_cancel_order_preserves_broker_reported_fill_without_fill_events() -> None:
+    trader = ScriptedBrokerTrader(
+        submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))],
+        cancel_outcomes=[
+            _order(
+                order_id="order-1",
+                limit_price=Decimal("10000"),
+                status=OrderStatus.FILLED,
+                updated_at="2026-04-13T09:02:00+09:00",
+                filled_quantity=10,
+            )
+        ],
+    )
+    engine = OrderExecutionEngine(trader)
+
+    engine.submit_order(_order_request())
+    canceled = engine.cancel_order(
+        OrderCancelRequest(
+            request_id="cancel-1",
+            order_id="order-1",
+            requested_at=_dt("2026-04-13T09:02:00+09:00"),
+        )
+    )
+
+    assert canceled.order.status is OrderStatus.FILLED
+    assert canceled.order.filled_quantity == 10
+    assert canceled.fills == ()
+
+
 class ScriptedBrokerTrader:
     def __init__(
         self,
@@ -253,6 +282,7 @@ def _order(
     limit_price: Decimal,
     status: OrderStatus = OrderStatus.ACKNOWLEDGED,
     updated_at: str = "2026-04-13T09:00:00+09:00",
+    filled_quantity: int = 0,
 ) -> ExecutionOrder:
     return ExecutionOrder(
         order_id=order_id,
@@ -263,6 +293,7 @@ def _order(
         status=status,
         created_at=_dt("2026-04-13T09:00:00+09:00"),
         updated_at=_dt(updated_at),
+        filled_quantity=filled_quantity,
     )
 
 

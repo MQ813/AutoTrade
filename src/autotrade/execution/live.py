@@ -279,13 +279,15 @@ def _apply_fills_to_order(
     order: ExecutionOrder,
     fills: tuple[ExecutionFill, ...],
 ) -> ExecutionOrder:
-    filled_quantity = sum(fill.quantity for fill in fills)
+    filled_quantity = max(
+        order.filled_quantity,
+        sum(fill.quantity for fill in fills),
+    )
     if filled_quantity > order.quantity:
         raise ExecutionEngineError("fills exceed order quantity")
-    if not fills:
-        return replace(order, filled_quantity=filled_quantity)
-
-    updated_at = max(order.updated_at, fills[-1].filled_at)
+    updated_at = order.updated_at
+    if fills:
+        updated_at = max(order.updated_at, fills[-1].filled_at)
     status = order.status
     if status not in {OrderStatus.CANCELED, OrderStatus.REJECTED}:
         if filled_quantity == order.quantity:

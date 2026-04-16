@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import re
+import threading
+import time
 from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
@@ -17,7 +19,9 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Final
 from urllib.error import HTTPError
+from urllib.parse import parse_qsl
 from urllib.parse import urlencode
+from urllib.parse import urlsplit
 from urllib.request import Request
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
@@ -60,8 +64,13 @@ KIS_ORDER_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/order-cash"
 KIS_ORDER_AMEND_CANCEL_PATH: Final[str] = (
     "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 )
+KIS_AMENDABLE_ORDER_PATH: Final[str] = (
+    "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+)
 KIS_ORDER_HISTORY_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 KIS_LIMIT_ORDER_DIVISION: Final[str] = "00"
+KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.1
+KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS: Final[tuple[float, ...]] = (1.1, 2.2, 3.3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +102,36 @@ class CachedAccessToken:
     expires_at: datetime | None
 
 
+class _RequestThrottle:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def wait(
+        self,
+        *,
+        monotonic: Callable[[], float],
+        sleep: Callable[[float], None],
+        min_interval_seconds: float,
+    ) -> None:
+        if min_interval_seconds <= 0:
+            return
+
+        with self._lock:
+            current = monotonic()
+            scheduled_at = max(current, self._next_allowed_at)
+            self._next_allowed_at = scheduled_at + min_interval_seconds
+
+        delay_seconds = scheduled_at - current
+        if delay_seconds > 0:
+            sleep(delay_seconds)
+
+
+_REQUEST_THROTTLES: dict[str, _RequestThrottle] = {}
+_REQUEST_THROTTLES_LOCK = threading.Lock()
+_RAW_LOG_LOCK = threading.Lock()
+
+
 class _KoreaInvestmentApiClient:
     def __init__(
         self,
@@ -101,16 +140,31 @@ class _KoreaInvestmentApiClient:
         transport: HttpTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         token_cache_path: Path | None = None,
+        sleep: Callable[[float], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        min_request_interval_seconds: float | None = None,
     ) -> None:
         self._settings = settings
         self._transport = transport or _urllib_transport
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._sleep = sleep or time.sleep
+        self._monotonic = monotonic or time.monotonic
         self._access_token: str | None = None
         self._access_token_expires_at: datetime | None = None
         self._base_url = (
             PAPER_BASE_URL if settings.environment == "paper" else LIVE_BASE_URL
         )
         self._token_cache_path = token_cache_path or _default_token_cache_path(settings)
+        self._raw_log_dir = _resolve_raw_log_directory(settings)
+        self._min_request_interval_seconds = _resolve_min_request_interval_seconds(
+            transport=transport,
+            explicit_seconds=min_request_interval_seconds,
+        )
+        self._request_throttle = (
+            _request_throttle_for(settings)
+            if self._min_request_interval_seconds > 0
+            else None
+        )
         self._cano, self._account_product_code = _split_account(
             settings.account,
             environment=settings.environment,
@@ -142,7 +196,9 @@ class _KoreaInvestmentApiClient:
                 else None
             ),
         )
+        self._wait_for_request_slot()
         response = self._transport(request)
+        self._write_raw_http_log(request=request, response=response)
         if response.status >= 400:
             raise KoreaInvestmentBrokerError(
                 _format_http_error(
@@ -156,6 +212,45 @@ class _KoreaInvestmentApiClient:
         payload = _decode_json(response.body)
         _raise_for_api_error(payload)
         return payload
+
+    def _write_raw_http_log(
+        self,
+        *,
+        request: HttpRequest,
+        response: HttpResponse,
+    ) -> None:
+        if self._raw_log_dir is None:
+            return
+
+        log_directory = self._raw_log_dir
+        log_path = log_directory / f"kis_raw_{self._clock().astimezone(KST):%Y%m%d}.log"
+        entry = {
+            "timestamp": self._clock().astimezone(KST).isoformat(),
+            "method": request.method,
+            "url": _sanitize_url_for_log(request.url),
+            "request_headers": _sanitize_headers_for_log(request.headers),
+            "request_body": _decode_body_for_log(request.body),
+            "response_status": response.status,
+            "response_headers": _sanitize_headers_for_log(response.headers),
+            "response_body": _decode_body_for_log(response.body),
+        }
+        try:
+            log_directory.mkdir(parents=True, exist_ok=True)
+            with _RAW_LOG_LOCK:
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(entry, ensure_ascii=False))
+                    handle.write("\n")
+        except OSError:
+            return
+
+    def _wait_for_request_slot(self) -> None:
+        if self._request_throttle is None:
+            return
+        self._request_throttle.wait(
+            monotonic=self._monotonic,
+            sleep=self._sleep,
+            min_interval_seconds=self._min_request_interval_seconds,
+        )
 
     def _build_headers(
         self,
@@ -296,12 +391,18 @@ class KoreaInvestmentBrokerReader(_KoreaInvestmentApiClient, BrokerReader):
         transport: HttpTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         token_cache_path: Path | None = None,
+        sleep: Callable[[float], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        min_request_interval_seconds: float | None = None,
     ) -> None:
         super().__init__(
             settings,
             transport=transport,
             clock=clock,
             token_cache_path=token_cache_path,
+            sleep=sleep,
+            monotonic=monotonic,
+            min_request_interval_seconds=min_request_interval_seconds,
         )
         self._quote_tr_id = "FHKST01010100"
         self._balance_tr_id = (
@@ -431,12 +532,18 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         transport: HttpTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         token_cache_path: Path | None = None,
+        sleep: Callable[[float], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        min_request_interval_seconds: float | None = None,
     ) -> None:
         super().__init__(
             settings,
             transport=transport,
             clock=clock,
             token_cache_path=token_cache_path,
+            sleep=sleep,
+            monotonic=monotonic,
+            min_request_interval_seconds=min_request_interval_seconds,
         )
         self._buy_order_tr_id = (
             "VTTC0802U" if settings.environment == "paper" else "TTTC0802U"
@@ -447,6 +554,13 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         self._amend_cancel_tr_id = (
             "VTTC0803U" if settings.environment == "paper" else "TTTC0803U"
         )
+        self._amendable_order_tr_ids = (
+            ("VTTC0084R", "VTTC8036R")
+            if settings.environment == "paper"
+            else ("TTTC0084R", "TTTC8036R")
+        )
+        self._amendable_order_lookup_supported: bool | None = None
+        self._management_order_records: dict[str, Mapping[str, object]] = {}
         self._order_history_tr_id = (
             "VTTC8001R" if settings.environment == "paper" else "TTTC8001R"
         )
@@ -477,6 +591,12 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
         output = _require_mapping(payload, "output")
         order_id = _coerce_string(output.get("ODNO"), field_name="ODNO")
+        self._remember_management_order_record(
+            _build_management_order_record_from_submission(
+                request=request,
+                output=output,
+            )
+        )
         return ExecutionOrder(
             order_id=order_id,
             symbol=request.symbol,
@@ -489,7 +609,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def amend_order(self, request: OrderAmendRequest) -> ExecutionOrder:
-        current_record = self._require_order_record(
+        current_record = self._require_order_record_for_management(
             request.order_id,
             reference_time=request.requested_at,
         )
@@ -508,7 +628,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                 "CANO": self._cano,
                 "ACNT_PRDT_CD": self._account_product_code,
                 "KRX_FWDG_ORD_ORGNO": _resolve_order_branch(current_record),
-                "ORGN_ODNO": request.order_id,
+                "ORGN_ODNO": _normalize_order_identifier(request.order_id),
                 "ORD_DVSN": _resolve_order_division(current_record),
                 "RVSE_CNCL_DVSN_CD": "01",
                 "ORD_QTY": "0" if amend_all_remaining else str(next_quantity),
@@ -520,6 +640,28 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
         output = _require_mapping(payload, "output")
         amended_order_id = _optional_output_string(output.get("ODNO")) or request.order_id
+        self._remember_management_order_record(
+            {
+                "ord_dt": request.requested_at.astimezone(KST).strftime("%Y%m%d"),
+                "ord_gno_brno": _resolve_order_branch(current_record),
+                "ord_orgno": _resolve_order_branch(current_record),
+                "odno": amended_order_id,
+                "orgn_odno": _normalize_order_identifier(request.order_id),
+                "sll_buy_dvsn_cd": "02" if current_order.side is OrderSide.BUY else "01",
+                "sll_buy_dvsn_cd_name": (
+                    "매수" if current_order.side is OrderSide.BUY else "매도"
+                ),
+                "pdno": current_order.symbol,
+                "ord_qty": str(next_quantity),
+                "ord_unpr": _format_order_price(next_limit_price),
+                "ord_tmd": request.requested_at.astimezone(KST).strftime("%H%M%S"),
+                "tot_ccld_qty": str(current_order.filled_quantity),
+                "avg_prvs": "",
+                "cncl_yn": "N",
+                "ord_dvsn_cd": _resolve_order_division(current_record),
+                "rjct_qty": "0",
+            }
+        )
         return ExecutionOrder(
             order_id=amended_order_id,
             symbol=current_order.symbol,
@@ -533,7 +675,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def cancel_order(self, request: OrderCancelRequest) -> ExecutionOrder:
-        current_record = self._require_order_record(
+        current_record = self._require_order_record_for_management(
             request.order_id,
             reference_time=request.requested_at,
         )
@@ -542,26 +684,88 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             fallback_order_id=request.order_id,
             fallback_time=request.requested_at,
         )
-        payload = self._request_json(
-            "POST",
-            KIS_ORDER_AMEND_CANCEL_PATH,
-            body={
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._account_product_code,
-                "KRX_FWDG_ORD_ORGNO": _resolve_order_branch(current_record),
-                "ORGN_ODNO": request.order_id,
-                "ORD_DVSN": _resolve_order_division(current_record),
-                "RVSE_CNCL_DVSN_CD": "02",
-                "ORD_QTY": "0",
-                "ORD_UNPR": "0",
-                "QTY_ALL_ORD_YN": "Y",
-            },
-            tr_id=self._amend_cancel_tr_id,
-            require_hashkey=True,
-        )
+        try:
+            payload = self._request_json(
+                "POST",
+                KIS_ORDER_AMEND_CANCEL_PATH,
+                body={
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._account_product_code,
+                    "KRX_FWDG_ORD_ORGNO": _resolve_order_branch(current_record),
+                    "ORGN_ODNO": _normalize_order_identifier(request.order_id),
+                    "ORD_DVSN": _resolve_order_division(current_record),
+                    "RVSE_CNCL_DVSN_CD": "02",
+                    "ORD_QTY": "0",
+                    "ORD_UNPR": "0",
+                    "QTY_ALL_ORD_YN": "Y",
+                },
+                tr_id=self._amend_cancel_tr_id,
+                require_hashkey=True,
+            )
+        except KoreaInvestmentBrokerError as error:
+            if _is_no_cancelable_quantity_error(error):
+                filled_order = ExecutionOrder(
+                    order_id=request.order_id,
+                    symbol=current_order.symbol,
+                    side=current_order.side,
+                    quantity=current_order.quantity,
+                    limit_price=current_order.limit_price,
+                    status=OrderStatus.FILLED,
+                    created_at=current_order.created_at,
+                    updated_at=request.requested_at,
+                    filled_quantity=current_order.quantity,
+                )
+                self._remember_management_order_record(
+                    {
+                        "ord_dt": request.requested_at.astimezone(KST).strftime("%Y%m%d"),
+                        "ord_gno_brno": _resolve_order_branch(current_record),
+                        "ord_orgno": _resolve_order_branch(current_record),
+                        "odno": request.order_id,
+                        "orgn_odno": _normalize_order_identifier(request.order_id),
+                        "sll_buy_dvsn_cd": (
+                            "02" if current_order.side is OrderSide.BUY else "01"
+                        ),
+                        "sll_buy_dvsn_cd_name": (
+                            "매수" if current_order.side is OrderSide.BUY else "매도"
+                        ),
+                        "pdno": current_order.symbol,
+                        "ord_qty": str(current_order.quantity),
+                        "ord_unpr": _format_order_price(current_order.limit_price),
+                        "ord_tmd": request.requested_at.astimezone(KST).strftime("%H%M%S"),
+                        "tot_ccld_qty": str(current_order.quantity),
+                        "avg_prvs": "",
+                        "cncl_yn": "N",
+                        "ord_dvsn_cd": _resolve_order_division(current_record),
+                        "rjct_qty": "0",
+                    }
+                )
+                return filled_order
+            raise
         output = _require_mapping(payload, "output")
         canceled_order_id = (
             _optional_output_string(output.get("ODNO")) or request.order_id
+        )
+        self._remember_management_order_record(
+            {
+                "ord_dt": request.requested_at.astimezone(KST).strftime("%Y%m%d"),
+                "ord_gno_brno": _resolve_order_branch(current_record),
+                "ord_orgno": _resolve_order_branch(current_record),
+                "odno": canceled_order_id,
+                "orgn_odno": _normalize_order_identifier(request.order_id),
+                "sll_buy_dvsn_cd": "02" if current_order.side is OrderSide.BUY else "01",
+                "sll_buy_dvsn_cd_name": (
+                    "매수" if current_order.side is OrderSide.BUY else "매도"
+                ),
+                "pdno": current_order.symbol,
+                "ord_qty": str(current_order.quantity),
+                "ord_unpr": _format_order_price(current_order.limit_price),
+                "ord_tmd": request.requested_at.astimezone(KST).strftime("%H%M%S"),
+                "tot_ccld_qty": str(current_order.filled_quantity),
+                "avg_prvs": "",
+                "cncl_yn": "Y",
+                "ord_dvsn_cd": _resolve_order_division(current_record),
+                "rjct_qty": "0",
+            }
         )
         return ExecutionOrder(
             order_id=canceled_order_id,
@@ -576,7 +780,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
-        record = self._require_order_record(order_id, reference_time=self._clock())
+        record = self._find_order_record_for_fills(order_id, reference_time=self._clock())
+        if record is None:
+            raise KoreaInvestmentBrokerError(f"order history missing order_id={order_id}")
         filled_quantity = _coerce_optional_int(record.get("tot_ccld_qty")) or 0
         if filled_quantity <= 0:
             return ()
@@ -601,22 +807,59 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         *,
         reference_time: datetime,
     ) -> Mapping[str, object]:
-        records = self._load_order_records(reference_time)
         normalized_order_id = order_id.strip()
-        exact_match = _find_order_record_by_field(
-            records,
-            field_name="odno",
-            value=normalized_order_id,
-        )
-        if exact_match is not None:
-            return exact_match
-        origin_match = _find_order_record_by_field(
-            records,
-            field_name="orgn_odno",
-            value=normalized_order_id,
-        )
-        if origin_match is not None:
-            return origin_match
+        for delay_seconds in (*KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS, None):
+            records = self._load_order_records(reference_time)
+            exact_match = _find_order_record_by_field(
+                records,
+                field_name="odno",
+                value=normalized_order_id,
+            )
+            if exact_match is not None:
+                return exact_match
+            origin_match = _find_order_record_by_field(
+                records,
+                field_name="orgn_odno",
+                value=normalized_order_id,
+            )
+            if origin_match is not None:
+                return origin_match
+            if delay_seconds is None:
+                break
+            self._sleep(delay_seconds)
+        raise KoreaInvestmentBrokerError(f"order history missing order_id={order_id}")
+
+    def _require_order_record_for_management(
+        self,
+        order_id: str,
+        *,
+        reference_time: datetime,
+    ) -> Mapping[str, object]:
+        cached_record = self._lookup_management_order_record(order_id)
+        if cached_record is not None:
+            return cached_record
+
+        normalized_order_id = order_id.strip()
+        for delay_seconds in (*KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS, None):
+            history_match = _find_matching_order_record(
+                self._load_order_records(reference_time),
+                normalized_order_id,
+            )
+            if history_match is not None:
+                self._remember_management_order_record(history_match)
+                return history_match
+
+            amendable_match = _find_matching_order_record(
+                self._load_amendable_order_records(),
+                normalized_order_id,
+            )
+            if amendable_match is not None:
+                self._remember_management_order_record(amendable_match)
+                return amendable_match
+
+            if delay_seconds is None:
+                break
+            self._sleep(delay_seconds)
         raise KoreaInvestmentBrokerError(f"order history missing order_id={order_id}")
 
     def _load_order_records(
@@ -663,6 +906,84 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             )
         )
 
+    def _load_amendable_order_records(self) -> tuple[Mapping[str, object], ...]:
+        if self._amendable_order_lookup_supported is False:
+            return ()
+
+        last_error: KoreaInvestmentBrokerError | None = None
+        for tr_id in self._amendable_order_tr_ids:
+            try:
+                payload = self._request_json(
+                    "GET",
+                    KIS_AMENDABLE_ORDER_PATH,
+                    params={
+                        "CANO": self._cano,
+                        "ACNT_PRDT_CD": self._account_product_code,
+                        "INQR_DVSN_1": "0",
+                        "INQR_DVSN_2": "0",
+                        "CTX_AREA_FK100": "",
+                        "CTX_AREA_NK100": "",
+                    },
+                    tr_id=tr_id,
+                )
+            except KoreaInvestmentBrokerError as error:
+                if _is_unsupported_amendable_order_lookup_error(error):
+                    self._amendable_order_lookup_supported = False
+                    return ()
+                last_error = error
+                continue
+
+            self._amendable_order_lookup_supported = True
+            rows = _require_sequence(payload, "output")
+            return tuple(
+                row
+                for row in rows
+                if isinstance(row, Mapping) and not _is_blank_value(row.get("odno"))
+            )
+
+        if last_error is not None:
+            raise last_error
+        return ()
+
+    def _lookup_management_order_record(
+        self,
+        order_id: str,
+        *,
+        require_branch: bool = True,
+    ) -> Mapping[str, object] | None:
+        normalized_order_id = _normalize_order_identifier(order_id)
+        record = self._management_order_records.get(normalized_order_id)
+        if record is None:
+            return None
+        if require_branch and _is_blank_value(_resolve_order_branch(record)):
+            return None
+        return record
+
+    def _remember_management_order_record(
+        self,
+        record: Mapping[str, object],
+    ) -> None:
+        for field_name in ("odno", "orgn_odno"):
+            order_id = _optional_output_string(record.get(field_name))
+            if order_id is None:
+                continue
+            self._management_order_records[_normalize_order_identifier(order_id)] = record
+
+    def _find_order_record_for_fills(
+        self,
+        order_id: str,
+        *,
+        reference_time: datetime,
+    ) -> Mapping[str, object] | None:
+        history_match = _find_matching_order_record(
+            self._load_order_records(reference_time),
+            order_id.strip(),
+        )
+        if history_match is not None:
+            self._remember_management_order_record(history_match)
+            return history_match
+        return self._lookup_management_order_record(order_id, require_branch=False)
+
 
 def _is_blank_value(value: object) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
@@ -682,9 +1003,170 @@ def _find_order_record_by_field(
     value: str,
 ) -> Mapping[str, object] | None:
     for record in records:
-        if _optional_output_string(record.get(field_name)) == value:
+        if _order_identifiers_match(
+            _optional_output_string(record.get(field_name)),
+            value,
+        ):
             return record
     return None
+
+
+def _find_matching_order_record(
+    records: Sequence[Mapping[str, object]],
+    order_id: str,
+) -> Mapping[str, object] | None:
+    exact_match = _find_order_record_by_field(
+        records,
+        field_name="odno",
+        value=order_id,
+    )
+    if exact_match is not None:
+        return exact_match
+    return _find_order_record_by_field(
+        records,
+        field_name="orgn_odno",
+        value=order_id,
+    )
+
+
+def _build_management_order_record_from_submission(
+    *,
+    request: OrderRequest,
+    output: Mapping[str, object],
+) -> Mapping[str, object]:
+    order_id = _coerce_string(output.get("ODNO"), field_name="ODNO")
+    submitted_at = request.requested_at.astimezone(KST)
+    order_branch = (
+        _optional_output_string(output.get("KRX_FWDG_ORD_ORGNO"))
+        or _optional_output_string(output.get("ORD_GNO_BRNO"))
+        or _optional_output_string(output.get("ord_gno_brno"))
+        or ""
+    )
+    order_time = (
+        _optional_output_string(output.get("ORD_TMD"))
+        or _optional_output_string(output.get("ord_tmd"))
+        or submitted_at.strftime("%H%M%S")
+    )
+    return {
+        "ord_dt": submitted_at.strftime("%Y%m%d"),
+        "ord_gno_brno": order_branch,
+        "ord_orgno": order_branch,
+        "odno": order_id,
+        "orgn_odno": "",
+        "sll_buy_dvsn_cd": "02" if request.side is OrderSide.BUY else "01",
+        "sll_buy_dvsn_cd_name": "매수" if request.side is OrderSide.BUY else "매도",
+        "pdno": request.symbol,
+        "ord_qty": str(request.quantity),
+        "ord_unpr": _format_order_price(request.limit_price),
+        "ord_tmd": order_time,
+        "tot_ccld_qty": "0",
+        "avg_prvs": "",
+        "cncl_yn": "N",
+        "ord_dvsn_cd": KIS_LIMIT_ORDER_DIVISION,
+        "rjct_qty": "0",
+    }
+
+
+def _resolve_raw_log_directory(settings: BrokerSettings) -> Path | None:
+    if settings.environment != "paper":
+        return None
+
+    raw_value = os.getenv("AUTOTRADE_LOG_DIR")
+    if raw_value is None or not raw_value.strip():
+        return None
+
+    log_dir = Path(raw_value).expanduser()
+    if log_dir.exists() and not log_dir.is_dir():
+        return None
+    return log_dir
+
+
+def _normalize_order_identifier(value: str) -> str:
+    normalized = value.strip()
+    if normalized.isdigit():
+        return normalized.lstrip("0") or "0"
+    return normalized
+
+
+def _order_identifiers_match(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    return _normalize_order_identifier(left) == _normalize_order_identifier(right)
+
+
+def _is_unsupported_amendable_order_lookup_error(
+    error: KoreaInvestmentBrokerError,
+) -> bool:
+    message = str(error)
+    return message.startswith("90000000 - ")
+
+
+def _is_no_cancelable_quantity_error(error: KoreaInvestmentBrokerError) -> bool:
+    message = str(error)
+    return message.startswith("40330000 - ")
+
+
+def _sanitize_url_for_log(url: str) -> str:
+    parsed = urlsplit(url)
+    if not parsed.query:
+        return url
+
+    sanitized_query = urlencode(
+        [
+            (key, _redact_log_value(key, value))
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        ]
+    )
+    return parsed._replace(query=sanitized_query).geturl()
+
+
+def _sanitize_headers_for_log(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: _redact_log_value(key, value)
+        for key, value in headers.items()
+    }
+
+
+def _decode_body_for_log(body: bytes | None) -> object | None:
+    if body is None:
+        return None
+
+    decoded_text = body.decode("utf-8", errors="replace")
+    parsed = _try_decode_json(body)
+    if parsed is None:
+        return decoded_text
+    return _sanitize_json_value_for_log(parsed)
+
+
+def _sanitize_json_value_for_log(value: object, key: str | None = None) -> object:
+    if isinstance(value, Mapping):
+        return {
+            nested_key: _sanitize_json_value_for_log(nested_value, nested_key)
+            for nested_key, nested_value in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [
+            _sanitize_json_value_for_log(item, key)
+            for item in value
+        ]
+    if isinstance(value, str) and key is not None:
+        return _redact_log_value(key, value)
+    return value
+
+
+def _redact_log_value(key: str, value: str) -> str:
+    normalized_key = key.strip().lower()
+    if normalized_key in {
+        "authorization",
+        "appkey",
+        "appsecret",
+        "hashkey",
+        "cano",
+    }:
+        return "[REDACTED]"
+    return value
 
 
 def _format_order_price(value: Decimal) -> str:
@@ -938,6 +1420,32 @@ def _default_token_cache_path(settings: BrokerSettings) -> Path:
         / "korea_investment"
         / f"access-token-{cache_key[:16]}.json"
     )
+
+
+def _request_throttle_for(settings: BrokerSettings) -> _RequestThrottle:
+    key = hashlib.sha256(
+        f"{settings.environment}:{settings.api_key}:{settings.account}".encode("utf-8")
+    ).hexdigest()
+    with _REQUEST_THROTTLES_LOCK:
+        throttle = _REQUEST_THROTTLES.get(key)
+        if throttle is None:
+            throttle = _RequestThrottle()
+            _REQUEST_THROTTLES[key] = throttle
+        return throttle
+
+
+def _resolve_min_request_interval_seconds(
+    *,
+    transport: HttpTransport | None,
+    explicit_seconds: float | None,
+) -> float:
+    if explicit_seconds is not None:
+        if explicit_seconds < 0:
+            raise ValueError("min_request_interval_seconds must be non-negative")
+        return explicit_seconds
+    if transport is not None:
+        return 0.0
+    return KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
 
 
 def _resolve_as_of(output: Mapping[str, object], fallback: datetime) -> datetime:

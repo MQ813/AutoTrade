@@ -153,6 +153,49 @@ def test_korea_investment_broker_reader_returns_standard_models() -> None:
     }
 
 
+def test_korea_investment_logs_raw_http_exchange_for_paper_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_dir = tmp_path / "logs"
+    monkeypatch.setenv("AUTOTRADE_LOG_DIR", str(log_dir))
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345",
+                    },
+                },
+            ),
+        },
+    )
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    reader.get_quote("069500")
+
+    log_path = log_dir / "kis_raw_20260411.log"
+    assert log_path.exists()
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    token_entry = json.loads(lines[0])
+    quote_entry = json.loads(lines[1])
+    assert token_entry["request_headers"]["appkey"] == "[REDACTED]"
+    assert token_entry["request_headers"]["appsecret"] == "[REDACTED]"
+    assert quote_entry["request_headers"]["authorization"] == "[REDACTED]"
+    assert quote_entry["response_body"]["output"]["stck_prpr"] == "12345"
+
+
 def test_korea_investment_broker_reader_raises_when_token_is_missing() -> None:
     transport = RecordingTransport(
         {
@@ -464,7 +507,7 @@ def test_korea_investment_broker_trader_amends_and_cancels_using_order_history()
         updated_at=datetime(2026, 4, 11, 9, 2, tzinfo=ZoneInfo("Asia/Seoul")),
     )
     amend_request = transport.requests[3]
-    cancel_request = transport.requests[6]
+    cancel_request = transport.requests[5]
     assert amend_request.headers["hashkey"] == "hash-amend"
     assert cancel_request.headers["hashkey"] == "hash-cancel"
     assert json.loads(amend_request.body.decode("utf-8")) == {
@@ -527,6 +570,494 @@ def test_korea_investment_broker_trader_returns_aggregate_fill_snapshot() -> Non
             filled_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
         ),
     )
+
+
+def test_korea_investment_broker_trader_retries_when_order_history_is_delayed() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): [
+                json_response({"rt_cd": "0", "output1": []}),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [_order_history_row(order_id="order-1")],
+                    }
+                ),
+            ],
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+            ): json_response(
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "90000000",
+                    "msg1": "모의투자에서는 해당업무가 제공되지 않습니다.",
+                }
+            ),
+            ("POST", "/uapi/hashkey"): json_response({"HASH": "hash-amend"}),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {"ODNO": "order-2"},
+                }
+            ),
+        }
+    )
+    sleeps: list[float] = []
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        sleep=sleeps.append,
+        clock=lambda: datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id="order-1",
+            limit_price=Decimal("10100"),
+            requested_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert amended.order_id == "order-2"
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+    ]
+    assert sleeps == [1.1]
+
+
+def test_korea_investment_broker_trader_matches_zero_padded_order_ids() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [_order_history_row(order_id="12093")],
+                }
+            ),
+            ("POST", "/uapi/hashkey"): json_response({"HASH": "hash-amend"}),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {"ODNO": "12094"},
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id="0000012093",
+            limit_price=Decimal("10100"),
+            requested_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert amended.order_id == "12094"
+    amend_request = transport.requests[-1]
+    assert json.loads(amend_request.body.decode("utf-8"))["ORGN_ODNO"] == "12093"
+
+
+def test_korea_investment_broker_trader_uses_submission_cache_for_immediate_amend(
+) -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("POST", "/uapi/hashkey"): [
+                json_response({"HASH": "hash-submit"}),
+                json_response({"HASH": "hash-amend"}),
+            ],
+            ("POST", "/uapi/domestic-stock/v1/trading/order-cash"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "ODNO": "0000013438",
+                        "KRX_FWDG_ORD_ORGNO": "06010",
+                        "ORD_TMD": "103021",
+                    },
+                }
+            ),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {"ODNO": "0000013439"},
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 10, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    submitted = trader.submit_order(
+        OrderRequest(
+            request_id="submit-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=1,
+            limit_price=Decimal("92900"),
+            requested_at=datetime(2026, 4, 11, 10, 30, 21, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id=submitted.order_id,
+            limit_price=Decimal("94600"),
+            requested_at=datetime(2026, 4, 11, 10, 30, 24, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert amended.order_id == "0000013439"
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-cash",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+    ]
+    amend_request = transport.requests[-1]
+    assert json.loads(amend_request.body.decode("utf-8")) == {
+        "CANO": "12345678",
+        "ACNT_PRDT_CD": "01",
+        "KRX_FWDG_ORD_ORGNO": "06010",
+        "ORGN_ODNO": "13438",
+        "ORD_DVSN": "00",
+        "RVSE_CNCL_DVSN_CD": "01",
+        "ORD_QTY": "0",
+        "ORD_UNPR": "94600",
+        "QTY_ALL_ORD_YN": "Y",
+    }
+
+
+def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_when_history_is_empty(
+) -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("POST", "/uapi/hashkey"): [
+                json_response({"HASH": "hash-submit"}),
+                json_response({"HASH": "hash-amend"}),
+                json_response({"HASH": "hash-cancel"}),
+            ],
+            ("POST", "/uapi/domestic-stock/v1/trading/order-cash"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "KRX_FWDG_ORD_ORGNO": "00950",
+                        "ODNO": "0000013929",
+                        "ORD_TMD": "104605",
+                    },
+                }
+            ),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): [
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "KRX_FWDG_ORD_ORGNO": "00950",
+                            "ODNO": "0000013934",
+                            "ORD_TMD": "104609",
+                        },
+                    }
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "KRX_FWDG_ORD_ORGNO": "00950",
+                            "ODNO": "0000013939",
+                            "ORD_TMD": "104613",
+                        },
+                    }
+                ),
+            ],
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [],
+                    "output2": {
+                        "tot_ord_qty": "1",
+                        "tot_ccld_qty": "1",
+                        "tot_ccld_amt": "94350",
+                    },
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 10, 46, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    submitted = trader.submit_order(
+        OrderRequest(
+            request_id="submit-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=1,
+            limit_price=Decimal("90000"),
+            requested_at=datetime(2026, 4, 11, 10, 45, 42, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id=submitted.order_id,
+            limit_price=Decimal("93900"),
+            requested_at=datetime(2026, 4, 11, 10, 45, 47, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    canceled = trader.cancel_order(
+        OrderCancelRequest(
+            request_id="cancel-1",
+            order_id=amended.order_id,
+            requested_at=datetime(2026, 4, 11, 10, 45, 52, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    fills = trader.get_fills(canceled.order_id)
+
+    assert fills == ()
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-cash",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+    ]
+
+
+def test_korea_investment_broker_trader_treats_no_cancelable_quantity_as_filled(
+) -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("POST", "/uapi/hashkey"): [
+                json_response({"HASH": "hash-submit"}),
+                json_response({"HASH": "hash-cancel"}),
+            ],
+            ("POST", "/uapi/domestic-stock/v1/trading/order-cash"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "KRX_FWDG_ORD_ORGNO": "00950",
+                        "ODNO": "0000014086",
+                        "ORD_TMD": "104906",
+                    },
+                }
+            ),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): json_response(
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "40330000",
+                    "msg1": "모의투자 정정/취소할 수량이 없습니다.",
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 10, 49, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    submitted = trader.submit_order(
+        OrderRequest(
+            request_id="submit-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=1,
+            limit_price=Decimal("95000"),
+            requested_at=datetime(2026, 4, 11, 10, 49, 6, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+    canceled = trader.cancel_order(
+        OrderCancelRequest(
+            request_id="cancel-1",
+            order_id=submitted.order_id,
+            requested_at=datetime(2026, 4, 11, 10, 49, 39, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert canceled == ExecutionOrder(
+        order_id="0000014086",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=1,
+        limit_price=Decimal("95000"),
+        status=OrderStatus.FILLED,
+        created_at=datetime(2026, 4, 11, 10, 49, 6, tzinfo=ZoneInfo("Asia/Seoul")),
+        updated_at=datetime(2026, 4, 11, 10, 49, 39, tzinfo=ZoneInfo("Asia/Seoul")),
+        filled_quantity=1,
+    )
+
+
+def test_korea_investment_broker_trader_uses_amendable_lookup_when_history_missing(
+) -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+                {"rt_cd": "0", "output1": []}
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": [_order_history_row(order_id="12799")],
+                }
+            ),
+            ("POST", "/uapi/hashkey"): json_response({"HASH": "hash-amend"}),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {"ODNO": "12800"},
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    amended = trader.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id="0000012799",
+            limit_price=Decimal("10100"),
+            requested_at=datetime(2026, 4, 11, 9, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert amended.order_id == "12800"
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+    ]
+    amend_request = transport.requests[-1]
+    assert json.loads(amend_request.body.decode("utf-8")) == {
+        "CANO": "12345678",
+        "ACNT_PRDT_CD": "01",
+        "KRX_FWDG_ORD_ORGNO": "06010",
+        "ORGN_ODNO": "12799",
+        "ORD_DVSN": "00",
+        "RVSE_CNCL_DVSN_CD": "01",
+        "ORD_QTY": "0",
+        "ORD_UNPR": "10100",
+        "QTY_ALL_ORD_YN": "Y",
+    }
+
+
+def test_korea_investment_clients_share_request_throttle_across_instances(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "token-cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "access_token": "cached-token",
+                "expires_at": "2026-04-12T09:00:00+09:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    transport = RecordingTransport(
+        {
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345",
+                    },
+                },
+            ),
+            ("POST", "/uapi/hashkey"): json_response({"HASH": "hash-123"}),
+            ("POST", "/uapi/domestic-stock/v1/trading/order-cash"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {"ODNO": "order-1"},
+                }
+            ),
+        }
+    )
+    current_time = 0.0
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(seconds: float) -> None:
+        nonlocal current_time
+        sleeps.append(seconds)
+        current_time += seconds
+
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=transport,
+        token_cache_path=cache_path,
+        min_request_interval_seconds=1.1,
+        monotonic=monotonic,
+        sleep=sleep,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        token_cache_path=cache_path,
+        min_request_interval_seconds=1.1,
+        monotonic=monotonic,
+        sleep=sleep,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    reader.get_quote("069500")
+    trader.submit_order(
+        OrderRequest(
+            request_id="submit-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=1,
+            limit_price=Decimal("10000"),
+            requested_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+    )
+
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-cash",
+    ]
+    assert sleeps == [1.1, 1.1]
 
 
 @pytest.mark.parametrize(
