@@ -11,6 +11,7 @@ from autotrade.data.contracts import UniverseSource
 from autotrade.data.models import Bar
 from autotrade.data.models import Timeframe
 from autotrade.data.models import UniverseMember
+from autotrade.data.storage import CsvBarSource
 from autotrade.data.storage import CsvBarStore
 from autotrade.data.universe import StaticUniverseSource
 from autotrade.data.validation import find_missing_bar_timestamps
@@ -25,6 +26,7 @@ __all__ = [
     "BarStore",
     "BarSource",
     "CsvBarStore",
+    "CsvBarSource",
     "KRX_HOLIDAY_DATES",
     "KST",
     "KRX_SESSION_CLOSE",

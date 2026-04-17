@@ -6,6 +6,8 @@ from autotrade.execution.backtest import BacktestTrade
 from autotrade.execution.live import DuplicateExecutionRequestError
 from autotrade.execution.live import ExecutionEngineError
 from autotrade.execution.live import ExecutionRetryPolicy
+from autotrade.execution.live import ExecutionStateStore
+from autotrade.execution.live import FileExecutionStateStore
 from autotrade.execution.live import InMemoryExecutionStateStore
 from autotrade.execution.live import InvalidExecutionOrderStateError
 from autotrade.execution.live import OrderExecutionEngine
@@ -28,6 +30,8 @@ __all__ = [
     "DuplicateExecutionRequestError",
     "ExecutionEngineError",
     "ExecutionRetryPolicy",
+    "ExecutionStateStore",
+    "FileExecutionStateStore",
     "InMemoryExecutionStateStore",
     "InvalidExecutionOrderStateError",
     "OrderExecutionEngine",

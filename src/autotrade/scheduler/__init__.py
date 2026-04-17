@@ -6,6 +6,7 @@ from autotrade.scheduler.runtime import PendingJob
 from autotrade.scheduler.runtime import ScheduledJob
 from autotrade.scheduler.runtime import ScheduledJobHandler
 from autotrade.scheduler.runtime import SchedulerConfig
+from autotrade.scheduler.runtime import SchedulerRetryPolicy
 from autotrade.scheduler.runtime import SchedulerRun
 from autotrade.scheduler.runtime import SchedulerState
 from autotrade.scheduler.runtime import SessionSlot
@@ -23,6 +24,7 @@ __all__ = [
     "ScheduledJob",
     "ScheduledJobHandler",
     "SchedulerConfig",
+    "SchedulerRetryPolicy",
     "SchedulerRun",
     "SchedulerState",
     "SessionSlot",

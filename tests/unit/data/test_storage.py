@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from autotrade.data import Bar
+from autotrade.data import CsvBarSource
 from autotrade.data import CsvBarStore
 from autotrade.data import Timeframe
 
@@ -28,6 +29,29 @@ def test_csv_bar_store_writes_deterministic_series_files(tmp_path: Path) -> None
         "357870,30m,2026-04-10T09:00:00+09:00,100,105,99,104,10\n"
         "357870,30m,2026-04-10T09:30:00+09:00,100,105,99,104,10\n"
     )
+
+
+def test_csv_bar_source_reads_and_filters_series(tmp_path: Path) -> None:
+    root_dir = tmp_path / "bars"
+    store = CsvBarStore(root_dir=root_dir)
+    source = CsvBarSource(root_dir=root_dir)
+    bars = (
+        _make_bar("069500", Timeframe.MINUTE_30, "2026-04-10T09:00:00+09:00"),
+        _make_bar("069500", Timeframe.MINUTE_30, "2026-04-10T09:30:00+09:00"),
+        _make_bar("069500", Timeframe.MINUTE_30, "2026-04-10T10:00:00+09:00"),
+    )
+    store.store_bars(bars)
+
+    loaded = source.load_bars("069500", Timeframe.MINUTE_30)
+    filtered = source.load_bars(
+        "069500",
+        Timeframe.MINUTE_30,
+        start=datetime.fromisoformat("2026-04-10T09:30:00+09:00"),
+        end=datetime.fromisoformat("2026-04-10T10:00:00+09:00"),
+    )
+
+    assert loaded == bars
+    assert filtered == bars[1:]
 
 
 def _make_bar(symbol: str, timeframe: Timeframe, timestamp: str) -> Bar:

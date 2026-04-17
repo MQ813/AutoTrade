@@ -124,7 +124,7 @@ def _parse_target_symbols(raw_value: str) -> tuple[str, ...]:
 
 
 def _parse_log_dir(raw_value: str) -> Path:
-    log_dir = Path(raw_value).expanduser()
+    log_dir = Path(os.path.expandvars(raw_value)).expanduser()
     if log_dir.exists() and not log_dir.is_dir():
         raise ConfigError(f"AUTOTRADE_LOG_DIR must point to a directory: {log_dir}")
     return log_dir

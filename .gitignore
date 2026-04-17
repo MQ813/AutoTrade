@@ -11,3 +11,4 @@ __pycache__/
 test_paper.sh
 test_paper.log
 logs/paper_*/
+.env

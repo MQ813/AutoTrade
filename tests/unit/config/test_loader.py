@@ -114,6 +114,22 @@ def test_load_settings_accepts_live_broker_environment(tmp_path: Path) -> None:
     assert settings.broker.environment == "live"
 
 
+def test_load_settings_expands_log_dir_environment_variables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PWD", str(tmp_path))
+
+    settings = load_settings(
+        _make_env(
+            tmp_path,
+            AUTOTRADE_LOG_DIR="$PWD/logs",
+        ),
+    )
+
+    assert settings.log_dir == tmp_path / "logs"
+
+
 def test_load_settings_reads_risk_settings(tmp_path: Path) -> None:
     settings = load_settings(
         _make_env(

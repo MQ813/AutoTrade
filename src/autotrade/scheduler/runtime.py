@@ -51,6 +51,18 @@ class SchedulerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SchedulerRetryPolicy:
+    max_attempts: int = 1
+    retryable_exceptions: tuple[type[BaseException], ...] = (Exception,)
+
+    def __post_init__(self) -> None:
+        if self.max_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
+        if not self.retryable_exceptions:
+            raise ValueError("retryable_exceptions must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class SessionSlot:
     phase: MarketSessionPhase
     scheduled_at: datetime
@@ -296,10 +308,12 @@ def run_scheduled_jobs(
     config: SchedulerConfig | None = None,
     calendar: KrxRegularSessionCalendar | None = None,
     clock: Callable[[], datetime] | None = None,
+    retry_policy: SchedulerRetryPolicy | None = None,
 ) -> SchedulerRun:
     _require_aware_datetime("timestamp", timestamp)
 
     resolved_clock = clock or (lambda: datetime.now(KST))
+    resolved_retry_policy = retry_policy or SchedulerRetryPolicy()
     resolved_state = state or SchedulerState()
     due_jobs = collect_due_jobs(
         jobs,
@@ -319,18 +333,30 @@ def run_scheduled_jobs(
         detail: str | None = None
         error: str | None = None
         success = False
-        try:
-            detail = pending_job.job.handler(
-                JobContext(
-                    phase=pending_job.phase,
-                    trading_day=pending_job.scheduled_at.astimezone(KST).date(),
-                    scheduled_at=pending_job.scheduled_at,
-                    triggered_at=started_at,
+        attempt_started_at = started_at
+        for attempt_index in range(resolved_retry_policy.max_attempts):
+            try:
+                detail = pending_job.job.handler(
+                    JobContext(
+                        phase=pending_job.phase,
+                        trading_day=pending_job.scheduled_at.astimezone(KST).date(),
+                        scheduled_at=pending_job.scheduled_at,
+                        triggered_at=attempt_started_at,
+                    )
                 )
-            )
-            success = True
-        except Exception as exc:  # pragma: no cover - exercised in unit tests
-            error = str(exc)
+                success = True
+                error = None
+                break
+            except Exception as exc:  # pragma: no cover - exercised in unit tests
+                error = str(exc)
+                if (
+                    attempt_index + 1 < resolved_retry_policy.max_attempts
+                    and isinstance(exc, resolved_retry_policy.retryable_exceptions)
+                ):
+                    attempt_started_at = resolved_clock()
+                    _require_aware_datetime("attempt_started_at", attempt_started_at)
+                    continue
+                break
 
         finished_at = resolved_clock()
         _require_aware_datetime("finished_at", finished_at)

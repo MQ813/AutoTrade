@@ -9,6 +9,7 @@ from autotrade.data import KrxRegularSessionCalendar
 from autotrade.scheduler import MarketSessionPhase
 from autotrade.scheduler import ScheduledJob
 from autotrade.scheduler import SchedulerConfig
+from autotrade.scheduler import SchedulerRetryPolicy
 from autotrade.scheduler import SchedulerState
 from autotrade.scheduler import build_session_slots
 from autotrade.scheduler import collect_due_jobs
@@ -136,6 +137,43 @@ def test_run_scheduled_jobs_executes_due_handlers_once_and_captures_failures() -
     )
 
     assert second_run.executed_jobs == ()
+
+
+def test_run_scheduled_jobs_retries_retryable_failures_within_same_slot() -> None:
+    attempts: list[datetime] = []
+
+    def flaky_job(context) -> str:
+        attempts.append(context.triggered_at)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary failure")
+        return "recovered"
+
+    run = run_scheduled_jobs(
+        (
+            ScheduledJob(
+                name="heartbeat",
+                phase=MarketSessionPhase.INTRADAY,
+                handler=flaky_job,
+            ),
+        ),
+        timestamp=datetime(2026, 4, 10, 9, 30, tzinfo=KST),
+        clock=iter(
+            (
+                datetime(2026, 4, 10, 9, 30, 1, tzinfo=KST),
+                datetime(2026, 4, 10, 9, 30, 2, tzinfo=KST),
+                datetime(2026, 4, 10, 9, 30, 3, tzinfo=KST),
+            )
+        ).__next__,
+        retry_policy=SchedulerRetryPolicy(max_attempts=2),
+    )
+
+    assert attempts == [
+        datetime(2026, 4, 10, 9, 30, 1, tzinfo=KST),
+        datetime(2026, 4, 10, 9, 30, 2, tzinfo=KST),
+    ]
+    assert run.executed_jobs[0].success is True
+    assert run.executed_jobs[0].detail == "recovered"
+    assert run.executed_jobs[0].error is None
 
 
 def test_next_scheduled_run_at_skips_holiday_after_close() -> None:

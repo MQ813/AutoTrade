@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -10,6 +11,7 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -43,6 +45,10 @@ from autotrade.common import OrderStatus
 from autotrade.common import OrderType
 from autotrade.common import Quote
 from autotrade.config.models import BrokerSettings
+from autotrade.data import Bar
+from autotrade.data import KRX_SESSION_CLOSE
+from autotrade.data import KRX_SESSION_OPEN
+from autotrade.data import Timeframe
 
 PAPER_BASE_URL: Final[str] = "https://openapivts.koreainvestment.com:29443"
 LIVE_BASE_URL: Final[str] = "https://openapi.koreainvestment.com:9443"
@@ -58,6 +64,12 @@ TOKEN_CACHE_REFRESH_BUFFER: Final[timedelta] = timedelta(minutes=1)
 KIS_TOKEN_PATH: Final[str] = "/oauth2/tokenP"
 KIS_HASHKEY_PATH: Final[str] = "/uapi/hashkey"
 KIS_QUOTE_PATH: Final[str] = "/uapi/domestic-stock/v1/quotations/inquire-price"
+KIS_DAILY_CHART_PATH: Final[str] = (
+    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+)
+KIS_INTRADAY_CHART_PATH: Final[str] = (
+    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+)
 KIS_BALANCE_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-balance"
 KIS_ORDER_CAPACITY_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 KIS_ORDER_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -71,6 +83,10 @@ KIS_ORDER_HISTORY_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-da
 KIS_LIMIT_ORDER_DIVISION: Final[str] = "00"
 KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.1
 KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS: Final[tuple[float, ...]] = (1.1, 2.2, 3.3)
+KIS_DAILY_CHART_PAGE_SIZE: Final[int] = 100
+KIS_INTRADAY_CHART_PAGE_SIZE: Final[int] = 120
+KIS_INTRADAY_MAX_PAGE_COUNT: Final[int] = 64
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +537,209 @@ class KoreaInvestmentBrokerReader(_KoreaInvestmentApiClient, BrokerReader):
                 "max_orderable_quantity": max_orderable_quantity,
                 "cash_available": cash_available,
             },
+        )
+
+
+class KoreaInvestmentBarSource(_KoreaInvestmentApiClient):
+    def __init__(
+        self,
+        settings: BrokerSettings,
+        *,
+        transport: HttpTransport | None = None,
+        clock: Callable[[], datetime] | None = None,
+        token_cache_path: Path | None = None,
+        sleep: Callable[[float], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        min_request_interval_seconds: float | None = None,
+    ) -> None:
+        super().__init__(
+            settings,
+            transport=transport,
+            clock=clock,
+            token_cache_path=token_cache_path,
+            sleep=sleep,
+            monotonic=monotonic,
+            min_request_interval_seconds=min_request_interval_seconds,
+        )
+        self._daily_chart_tr_id = "FHKST03010100"
+        self._intraday_chart_tr_id = "FHKST03010230"
+
+    def load_bars(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> tuple[Bar, ...]:
+        resolved_end = _normalize_chart_datetime(
+            end or self._clock(),
+            field_name="end",
+        )
+        resolved_start = (
+            None
+            if start is None
+            else _normalize_chart_datetime(start, field_name="start")
+        )
+        if resolved_start is not None and resolved_start > resolved_end:
+            return ()
+
+        if timeframe is Timeframe.DAY:
+            bars = self._load_daily_bars(
+                symbol,
+                start=resolved_start,
+                end=resolved_end,
+            )
+            return _filter_bars_for_window(
+                bars,
+                start=resolved_start,
+                end=resolved_end,
+            )
+
+        minute_bars = self._load_minute_bars(
+            symbol,
+            start=resolved_start,
+            end=resolved_end,
+        )
+        if timeframe is Timeframe.MINUTE_1:
+            return _filter_bars_for_window(
+                minute_bars,
+                start=resolved_start,
+                end=resolved_end,
+            )
+
+        if timeframe is Timeframe.DAY:
+            raise KoreaInvestmentBrokerError("unreachable daily timeframe branch")
+
+        aggregated = _aggregate_intraday_bars(
+            minute_bars,
+            timeframe=timeframe,
+            end=resolved_end,
+        )
+        return _filter_bars_for_window(
+            aggregated,
+            start=resolved_start,
+            end=resolved_end,
+        )
+
+    def _load_daily_bars(
+        self,
+        symbol: str,
+        *,
+        start: datetime | None,
+        end: datetime,
+    ) -> tuple[Bar, ...]:
+        start_date = (
+            end.date() - timedelta(days=180)
+            if start is None
+            else start.date()
+        )
+        current_end = end.date()
+        seen_timestamps: set[datetime] = set()
+        collected: list[Bar] = []
+
+        while True:
+            payload = self._request_json(
+                "GET",
+                KIS_DAILY_CHART_PATH,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_DATE_1": start_date.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": current_end.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE": "D",
+                    "FID_ORG_ADJ_PRC": "0",
+                },
+                tr_id=self._daily_chart_tr_id,
+            )
+            rows = _require_sequence(payload, "output2")
+            if not rows:
+                break
+
+            page_bars: list[Bar] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise KoreaInvestmentBrokerError("output2 entries must be mappings")
+                bar = _parse_daily_chart_bar(row, symbol=symbol)
+                if bar.timestamp in seen_timestamps:
+                    continue
+                seen_timestamps.add(bar.timestamp)
+                page_bars.append(bar)
+
+            if page_bars:
+                collected.extend(page_bars)
+
+            oldest_date = _oldest_bar_date(page_bars)
+            if oldest_date is None:
+                break
+            if oldest_date <= start_date or len(rows) < KIS_DAILY_CHART_PAGE_SIZE:
+                break
+            current_end = oldest_date - timedelta(days=1)
+
+        collected.sort(key=lambda bar: bar.timestamp)
+        return tuple(collected)
+
+    def _load_minute_bars(
+        self,
+        symbol: str,
+        *,
+        start: datetime | None,
+        end: datetime,
+    ) -> tuple[Bar, ...]:
+        cursor = _resolve_intraday_cursor(end)
+        start_boundary = (
+            cursor - timedelta(days=21)
+            if start is None
+            else start
+        )
+        seen_timestamps: set[datetime] = set()
+        collected: list[Bar] = []
+
+        for _ in range(KIS_INTRADAY_MAX_PAGE_COUNT):
+            payload = self._request_json(
+                "GET",
+                KIS_INTRADAY_CHART_PATH,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_HOUR_1": cursor.strftime("%H%M%S"),
+                    "FID_INPUT_DATE_1": cursor.strftime("%Y%m%d"),
+                    "FID_PW_DATA_INCU_YN": "Y",
+                    "FID_FAKE_TICK_INCU_YN": "",
+                },
+                tr_id=self._intraday_chart_tr_id,
+            )
+            rows = _require_sequence(payload, "output2")
+            if not rows:
+                break
+
+            page_bars: list[Bar] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise KoreaInvestmentBrokerError("output2 entries must be mappings")
+                bar = _parse_intraday_chart_bar(row, symbol=symbol)
+                if bar.timestamp > end or bar.timestamp in seen_timestamps:
+                    continue
+                seen_timestamps.add(bar.timestamp)
+                page_bars.append(bar)
+
+            if page_bars:
+                collected.extend(page_bars)
+
+            oldest_timestamp = _oldest_bar_timestamp(page_bars)
+            if oldest_timestamp is None:
+                break
+            if (
+                oldest_timestamp <= start_boundary
+                or len(rows) < KIS_INTRADAY_CHART_PAGE_SIZE
+            ):
+                break
+            if oldest_timestamp >= cursor:
+                break
+            cursor = oldest_timestamp
+
+        collected.sort(key=lambda bar: bar.timestamp)
+        return tuple(
+            bar for bar in collected if bar.timestamp >= start_boundary
         )
 
 
@@ -1265,6 +1484,175 @@ def _record_to_execution_order(
             quantity,
         ),
     )
+
+
+def _normalize_chart_datetime(value: datetime, *, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise KoreaInvestmentBrokerError(f"{field_name} must be timezone-aware")
+    return value.astimezone(KST).replace(microsecond=0)
+
+
+def _filter_bars_for_window(
+    bars: Sequence[Bar],
+    *,
+    start: datetime | None,
+    end: datetime,
+) -> tuple[Bar, ...]:
+    return tuple(
+        bar
+        for bar in bars
+        if (start is None or bar.timestamp >= start) and bar.timestamp <= end
+    )
+
+
+def _resolve_intraday_cursor(end: datetime) -> datetime:
+    local_end = end.astimezone(KST).replace(second=0, microsecond=0)
+    session_close = local_end.replace(
+        hour=KRX_SESSION_CLOSE.hour,
+        minute=KRX_SESSION_CLOSE.minute,
+        second=0,
+        microsecond=0,
+    )
+    if local_end > session_close:
+        return session_close
+    return local_end
+
+
+def _oldest_bar_date(bars: Sequence[Bar]) -> date | None:
+    if not bars:
+        return None
+    return min(bar.timestamp.date() for bar in bars)
+
+
+def _oldest_bar_timestamp(bars: Sequence[Bar]) -> datetime | None:
+    if not bars:
+        return None
+    return min(bar.timestamp for bar in bars)
+
+
+def _parse_daily_chart_bar(
+    row: Mapping[str, object],
+    *,
+    symbol: str,
+) -> Bar:
+    base_date = _coerce_string(row.get("stck_bsop_date"), field_name="stck_bsop_date")
+    if len(base_date) != 8:
+        raise KoreaInvestmentBrokerError("stck_bsop_date must use YYYYMMDD format")
+    try:
+        parsed_date = datetime.strptime(base_date, "%Y%m%d")
+    except ValueError as error:
+        raise KoreaInvestmentBrokerError(
+            "stck_bsop_date must use YYYYMMDD format"
+        ) from error
+    return Bar(
+        symbol=symbol,
+        timeframe=Timeframe.DAY,
+        timestamp=parsed_date.replace(
+            hour=KRX_SESSION_CLOSE.hour,
+            minute=KRX_SESSION_CLOSE.minute,
+            tzinfo=KST,
+        ),
+        open=_coerce_decimal(row.get("stck_oprc"), field_name="stck_oprc"),
+        high=_coerce_decimal(row.get("stck_hgpr"), field_name="stck_hgpr"),
+        low=_coerce_decimal(row.get("stck_lwpr"), field_name="stck_lwpr"),
+        close=_coerce_decimal(row.get("stck_clpr"), field_name="stck_clpr"),
+        volume=_coerce_optional_int(row.get("acml_vol")) or 0,
+    )
+
+
+def _parse_intraday_chart_bar(
+    row: Mapping[str, object],
+    *,
+    symbol: str,
+) -> Bar:
+    timestamp = _parse_chart_timestamp(row)
+    return Bar(
+        symbol=symbol,
+        timeframe=Timeframe.MINUTE_1,
+        timestamp=timestamp,
+        open=_coerce_decimal(row.get("stck_oprc"), field_name="stck_oprc"),
+        high=_coerce_decimal(row.get("stck_hgpr"), field_name="stck_hgpr"),
+        low=_coerce_decimal(row.get("stck_lwpr"), field_name="stck_lwpr"),
+        close=_coerce_decimal(row.get("stck_prpr"), field_name="stck_prpr"),
+        volume=_coerce_optional_int(row.get("cntg_vol")) or 0,
+    )
+
+
+def _parse_chart_timestamp(row: Mapping[str, object]) -> datetime:
+    base_date = _coerce_string(row.get("stck_bsop_date"), field_name="stck_bsop_date")
+    base_time = _coerce_string(row.get("stck_cntg_hour"), field_name="stck_cntg_hour")
+    normalized_time = base_time.zfill(6)
+    if len(base_date) != 8 or len(normalized_time) != 6:
+        raise KoreaInvestmentBrokerError("chart timestamp must use YYYYMMDD/HHMMSS")
+    try:
+        parsed = datetime.strptime(base_date + normalized_time, "%Y%m%d%H%M%S")
+    except ValueError as error:
+        raise KoreaInvestmentBrokerError(
+            "chart timestamp must use YYYYMMDD/HHMMSS"
+        ) from error
+    return parsed.replace(tzinfo=KST)
+
+
+def _aggregate_intraday_bars(
+    bars: Sequence[Bar],
+    *,
+    timeframe: Timeframe,
+    end: datetime,
+) -> tuple[Bar, ...]:
+    if timeframe is Timeframe.DAY:
+        raise KoreaInvestmentBrokerError("daily bars must not be aggregated intraday")
+    if timeframe is Timeframe.MINUTE_1:
+        return tuple(sorted(bars, key=lambda bar: bar.timestamp))
+
+    interval_minutes = int(timeframe.interval.total_seconds() // 60)
+    if interval_minutes <= 0:
+        raise KoreaInvestmentBrokerError("timeframe interval must be positive")
+
+    grouped: dict[datetime, list[Bar]] = {}
+    for bar in bars:
+        bucket_start = _intraday_bucket_start(bar.timestamp, interval_minutes)
+        session_close = bucket_start.replace(
+            hour=KRX_SESSION_CLOSE.hour,
+            minute=KRX_SESSION_CLOSE.minute,
+            second=0,
+            microsecond=0,
+        )
+        if bucket_start > session_close:
+            continue
+        bucket_complete_at = min(bucket_start + timeframe.interval, session_close)
+        if bucket_complete_at > end:
+            continue
+        grouped.setdefault(bucket_start, []).append(bar)
+
+    aggregated: list[Bar] = []
+    for bucket_start, series in sorted(grouped.items()):
+        series.sort(key=lambda bar: bar.timestamp)
+        aggregated.append(
+            Bar(
+                symbol=series[0].symbol,
+                timeframe=timeframe,
+                timestamp=bucket_start,
+                open=series[0].open,
+                high=max(bar.high for bar in series),
+                low=min(bar.low for bar in series),
+                close=series[-1].close,
+                volume=sum(bar.volume for bar in series),
+            )
+        )
+    return tuple(aggregated)
+
+
+def _intraday_bucket_start(timestamp: datetime, interval_minutes: int) -> datetime:
+    local_timestamp = timestamp.astimezone(KST)
+    session_open = local_timestamp.replace(
+        hour=KRX_SESSION_OPEN.hour,
+        minute=KRX_SESSION_OPEN.minute,
+        second=0,
+        microsecond=0,
+    )
+    elapsed_minutes = int((local_timestamp - session_open).total_seconds() // 60)
+    bucket_offset = (elapsed_minutes // interval_minutes) * interval_minutes
+    return session_open + timedelta(minutes=bucket_offset)
 
 
 def _urllib_transport(request: HttpRequest) -> HttpResponse:

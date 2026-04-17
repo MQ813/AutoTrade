@@ -9,8 +9,29 @@
 
 - 실전 환경에서는 `AUTOTRADE_BROKER_ENV=live`와 함께 `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`을 명시해 자동매매가 사용할 최대 운영 자금을 제한합니다.
 - 주문/체결 알림은 `report` 모듈의 `build_order_alert`, `build_fill_alert`, `publish_order_alert`, `publish_fill_alert`로 생성합니다.
+- `python tools/live_cycle.py`는 실행 시작 시 KIS에서 전략 주기에 맞는 바를 수집해 `AUTOTRADE_LOG_DIR/bars`에 저장한 뒤, 전략 신호, 리스크 검증, 주문 제출, 주문/체결 알림 발행을 한 번 실행합니다.
+- `tools/live_cycle.py`는 기본적으로 저장소 루트의 `.env`를 읽고, 템플릿은 `docs/live_cycle.env.example`에 있습니다.
+- `tools/live_cycle.py` 기본 입력 경로는 `AUTOTRADE_LOG_DIR/bars`이고, 기본 산출물은 `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`입니다.
 - 일일 점검 체크리스트는 `python tools/daily_inspection.py`로 생성하고, 주간 리뷰 템플릿은 `python tools/weekly_review.py`로 생성합니다.
 - 위 스크립트는 `AUTOTRADE_LOG_DIR` 아래에 텍스트 산출물을 남기며, 실제 운영 실행기나 외부 알림 채널은 상위 orchestration에서 연결합니다.
+
+## 실행 순서
+
+1. `cp docs/live_cycle.env.example .env`
+2. `.env` 안의 계좌, 종목, 로그 경로 값을 실제 환경에 맞게 수정합니다.
+3. `python tools/live_cycle.py`를 실행합니다.
+4. stdout 한글 로그와 `AUTOTRADE_LOG_DIR/bars`, `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`을 확인합니다.
+
+필요하면 `python tools/live_cycle.py --env-file /path/to/custom.env`로 다른 `.env` 파일을 지정할 수 있습니다.
+
+## 필수 설정
+
+- `AUTOTRADE_BROKER_ENV`
+- `AUTOTRADE_BROKER_API_KEY`
+- `AUTOTRADE_BROKER_API_SECRET`
+- `AUTOTRADE_BROKER_ACCOUNT`
+- `AUTOTRADE_TARGET_SYMBOLS`
+- `AUTOTRADE_LOG_DIR`
 
 ## 장 시작 전
 

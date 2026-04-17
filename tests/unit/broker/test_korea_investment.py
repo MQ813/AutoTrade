@@ -14,6 +14,7 @@ import pytest
 from autotrade.broker import BrokerReader
 from autotrade.broker.korea_investment import HttpRequest
 from autotrade.broker.korea_investment import HttpResponse
+from autotrade.broker.korea_investment import KoreaInvestmentBarSource
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerError
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
@@ -30,6 +31,8 @@ from autotrade.common import OrderStatus
 from autotrade.common import Quote
 from autotrade.config.models import BrokerEnvironment
 from autotrade.config import BrokerSettings
+from autotrade.data import Bar
+from autotrade.data import Timeframe
 
 
 def test_korea_investment_broker_reader_returns_standard_models() -> None:
@@ -976,6 +979,216 @@ def test_korea_investment_broker_trader_uses_amendable_lookup_when_history_missi
     }
 
 
+def test_korea_investment_bar_source_loads_daily_bars() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output2": [
+                        {
+                            "stck_bsop_date": "20260411",
+                            "stck_oprc": "102",
+                            "stck_hgpr": "105",
+                            "stck_lwpr": "101",
+                            "stck_clpr": "104",
+                            "acml_vol": "15",
+                        },
+                        {
+                            "stck_bsop_date": "20260410",
+                            "stck_oprc": "100",
+                            "stck_hgpr": "103",
+                            "stck_lwpr": "99",
+                            "stck_clpr": "102",
+                            "acml_vol": "10",
+                        },
+                    ],
+                },
+            ),
+        },
+    )
+    source = KoreaInvestmentBarSource(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    bars = source.load_bars(
+        "069500",
+        Timeframe.DAY,
+        start=datetime(2026, 4, 10, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        end=datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert bars == (
+        Bar(
+            symbol="069500",
+            timeframe=Timeframe.DAY,
+            timestamp=datetime(2026, 4, 10, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+            open=Decimal("100"),
+            high=Decimal("103"),
+            low=Decimal("99"),
+            close=Decimal("102"),
+            volume=10,
+        ),
+        Bar(
+            symbol="069500",
+            timeframe=Timeframe.DAY,
+            timestamp=datetime(2026, 4, 11, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+            open=Decimal("102"),
+            high=Decimal("105"),
+            low=Decimal("101"),
+            close=Decimal("104"),
+            volume=15,
+        ),
+    )
+    assert parse_qs(urlsplit(transport.requests[1].url).query) == {
+        "FID_COND_MRKT_DIV_CODE": ["J"],
+        "FID_INPUT_ISCD": ["069500"],
+        "FID_INPUT_DATE_1": ["20260410"],
+        "FID_INPUT_DATE_2": ["20260411"],
+        "FID_PERIOD_DIV_CODE": ["D"],
+        "FID_ORG_ADJ_PRC": ["0"],
+    }
+
+
+def test_korea_investment_bar_source_aggregates_intraday_bars_into_30m_bars() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"): [
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output2": _intraday_rows(
+                            "20260411",
+                            start_hour=10,
+                            start_minute=0,
+                            periods=120,
+                        ),
+                    },
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output2": _intraday_rows(
+                            "20260411",
+                            start_hour=9,
+                            start_minute=0,
+                            periods=61,
+                        ),
+                    },
+                ),
+            ],
+        },
+    )
+    source = KoreaInvestmentBarSource(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 12, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    bars = source.load_bars(
+        "069500",
+        Timeframe.MINUTE_30,
+        start=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        end=datetime(2026, 4, 11, 12, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert [bar.timestamp for bar in bars] == [
+        datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 4, 11, 9, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 4, 11, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 4, 11, 10, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 4, 11, 11, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 4, 11, 11, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    ]
+    assert bars[0] == Bar(
+        symbol="069500",
+        timeframe=Timeframe.MINUTE_30,
+        timestamp=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        open=Decimal("99"),
+        high=Decimal("130"),
+        low=Decimal("98"),
+        close=Decimal("129"),
+        volume=30,
+    )
+    assert bars[-1] == Bar(
+        symbol="069500",
+        timeframe=Timeframe.MINUTE_30,
+        timestamp=datetime(2026, 4, 11, 11, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        open=Decimal("249"),
+        high=Decimal("280"),
+        low=Decimal("248"),
+        close=Decimal("279"),
+        volume=30,
+    )
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+        "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+    ]
+    assert parse_qs(urlsplit(transport.requests[1].url).query)[
+        "FID_INPUT_HOUR_1"
+    ] == ["120000"]
+    assert parse_qs(urlsplit(transport.requests[2].url).query)[
+        "FID_INPUT_HOUR_1"
+    ] == ["100000"]
+
+
+def test_korea_investment_bar_source_keeps_market_close_bar_for_30m() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output2": _intraday_rows(
+                        "20260410",
+                        start_hour=15,
+                        start_minute=0,
+                        periods=31,
+                    ),
+                },
+            ),
+        },
+    )
+    source = KoreaInvestmentBarSource(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 10, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    bars = source.load_bars(
+        "069500",
+        Timeframe.MINUTE_30,
+        start=datetime(2026, 4, 10, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        end=datetime(2026, 4, 10, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert [bar.timestamp for bar in bars] == [
+        datetime(2026, 4, 10, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 4, 10, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    ]
+    assert bars[-1] == Bar(
+        symbol="069500",
+        timeframe=Timeframe.MINUTE_30,
+        timestamp=datetime(2026, 4, 10, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        open=Decimal("489"),
+        high=Decimal("491"),
+        low=Decimal("488"),
+        close=Decimal("490"),
+        volume=1,
+    )
+
+
 def test_korea_investment_clients_share_request_throttle_across_instances(
     tmp_path: Path,
 ) -> None:
@@ -1180,3 +1393,36 @@ def _order_history_row(
         "ord_dvsn_cd": "00",
         "rjct_qty": rejected_quantity,
     }
+
+
+def _intraday_rows(
+    date_text: str,
+    *,
+    start_hour: int,
+    start_minute: int,
+    periods: int,
+) -> list[dict[str, str]]:
+    start = datetime(
+        2026,
+        4,
+        11,
+        start_hour,
+        start_minute,
+        tzinfo=ZoneInfo("Asia/Seoul"),
+    )
+    rows: list[dict[str, str]] = []
+    for offset in reversed(range(periods)):
+        current = start + timedelta(minutes=offset)
+        close_value = Decimal(100 + (current.hour - 9) * 60 + current.minute)
+        rows.append(
+            {
+                "stck_bsop_date": date_text,
+                "stck_cntg_hour": current.strftime("%H%M%S"),
+                "stck_oprc": str(close_value - Decimal("1")),
+                "stck_hgpr": str(close_value + Decimal("1")),
+                "stck_lwpr": str(close_value - Decimal("2")),
+                "stck_prpr": str(close_value),
+                "cntg_vol": "1",
+            }
+        )
+    return rows

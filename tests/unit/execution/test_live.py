@@ -17,6 +17,7 @@ from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
 from autotrade.execution import DuplicateExecutionRequestError
 from autotrade.execution import ExecutionRetryPolicy
+from autotrade.execution import FileExecutionStateStore
 from autotrade.execution import InvalidExecutionOrderStateError
 from autotrade.execution import OrderExecutionEngine
 from autotrade.execution import RetryableExecutionError
@@ -219,6 +220,69 @@ def test_cancel_order_preserves_broker_reported_fill_without_fill_events() -> No
     assert canceled.order.status is OrderStatus.FILLED
     assert canceled.order.filled_quantity == 10
     assert canceled.fills == ()
+
+
+def test_file_execution_state_store_restores_existing_submit_without_new_broker_call(
+    tmp_path,
+) -> None:
+    request = _order_request()
+    state_path = tmp_path / "execution-state.json"
+    initial_engine = OrderExecutionEngine(
+        ScriptedBrokerTrader(
+            submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))]
+        ),
+        state_store=FileExecutionStateStore(state_path),
+    )
+
+    submitted = initial_engine.submit_order(request)
+    restored_trader = ScriptedBrokerTrader()
+    restored_engine = OrderExecutionEngine(
+        restored_trader,
+        state_store=FileExecutionStateStore(state_path),
+    )
+
+    restored = restored_engine.submit_order(request)
+
+    assert restored == submitted
+    assert restored_trader.submit_requests == []
+
+
+def test_file_execution_state_store_restores_order_aliases_after_restart(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "execution-state.json"
+    engine = OrderExecutionEngine(
+        ScriptedBrokerTrader(
+            submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))],
+            amend_outcomes=[
+                _order(
+                    order_id="order-2",
+                    limit_price=Decimal("10100"),
+                    updated_at="2026-04-13T09:01:00+09:00",
+                )
+            ],
+        ),
+        state_store=FileExecutionStateStore(state_path),
+    )
+
+    engine.submit_order(_order_request())
+    amended = engine.amend_order(
+        OrderAmendRequest(
+            request_id="amend-1",
+            order_id="order-1",
+            limit_price=Decimal("10100"),
+            requested_at=_dt("2026-04-13T09:01:00+09:00"),
+        )
+    )
+
+    restored_engine = OrderExecutionEngine(
+        ScriptedBrokerTrader(),
+        state_store=FileExecutionStateStore(state_path),
+    )
+
+    assert restored_engine.get_order_snapshot("order-1") == amended
+    assert restored_engine.get_order_snapshot("order-2") == amended
+    assert restored_engine.list_order_snapshots() == (amended,)
 
 
 class ScriptedBrokerTrader:

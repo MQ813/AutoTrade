@@ -35,6 +35,7 @@ from autotrade.report.operations import write_daily_inspection_report
 from autotrade.report.operations import write_daily_run_report
 from autotrade.report.operations import write_run_log
 from autotrade.report.operations import write_weekly_review_report
+from autotrade.report.notifiers import FileNotifier
 
 __all__ = [
     "AlertSeverity",
@@ -46,6 +47,7 @@ __all__ = [
     "DailyInspectionWindowSummary",
     "DailyPhaseSummary",
     "DailyRunReport",
+    "FileNotifier",
     "InspectionStatus",
     "InspectionWindow",
     "LogSeverity",

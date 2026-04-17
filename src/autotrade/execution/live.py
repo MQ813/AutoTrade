@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Protocol
 from typing import TypeVar
 
 from autotrade.broker import BrokerTrader
@@ -12,7 +17,9 @@ from autotrade.common import ExecutionOrder
 from autotrade.common import OrderAmendRequest
 from autotrade.common import OrderCancelRequest
 from autotrade.common import OrderRequest
+from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
+from autotrade.common import OrderType
 
 _T = TypeVar("_T")
 _TERMINAL_ORDER_STATUSES = {
@@ -79,6 +86,25 @@ class _TrackedRequest:
     order_id: str | None = None
 
 
+class ExecutionStateStore(Protocol):
+    def get_request(self, request_id: str) -> _TrackedRequest | None: ...
+
+    def save_request(self, tracked: _TrackedRequest) -> None: ...
+
+    def resolve_order_id(self, order_id: str) -> str: ...
+
+    def get_snapshot(self, order_id: str) -> OrderExecutionSnapshot | None: ...
+
+    def save_snapshot(
+        self,
+        snapshot: OrderExecutionSnapshot,
+        *,
+        aliases: Sequence[str] = (),
+    ) -> None: ...
+
+    def list_snapshots(self) -> tuple[OrderExecutionSnapshot, ...]: ...
+
+
 class InMemoryExecutionStateStore:
     def __init__(self) -> None:
         self._requests: dict[str, _TrackedRequest] = {}
@@ -115,7 +141,93 @@ class InMemoryExecutionStateStore:
         for alias in aliases:
             if alias == canonical_order_id:
                 continue
+            resolved_alias = self.resolve_order_id(alias)
+            if resolved_alias != canonical_order_id:
+                self._snapshots.pop(resolved_alias, None)
             self._order_aliases[alias] = canonical_order_id
+
+    def list_snapshots(self) -> tuple[OrderExecutionSnapshot, ...]:
+        return tuple(
+            sorted(
+                self._snapshots.values(),
+                key=lambda snapshot: (
+                    snapshot.order.created_at,
+                    snapshot.order.order_id,
+                ),
+            )
+        )
+
+
+class FileExecutionStateStore(InMemoryExecutionStateStore):
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        if self._path.exists() and not self._path.is_file():
+            raise ValueError("path must point to a file")
+        super().__init__()
+        if self._path.exists():
+            self._load()
+
+    def save_request(self, tracked: _TrackedRequest) -> None:
+        super().save_request(tracked)
+        self._persist()
+
+    def save_snapshot(
+        self,
+        snapshot: OrderExecutionSnapshot,
+        *,
+        aliases: Sequence[str] = (),
+    ) -> None:
+        super().save_snapshot(snapshot, aliases=aliases)
+        self._persist()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _load(self) -> None:
+        raw_payload = json.loads(self._path.read_text(encoding="utf-8"))
+        payload = _require_mapping_value(raw_payload, "serialized execution state")
+        self._requests = {
+            tracked.request.request_id: tracked
+            for tracked in (
+                _deserialize_tracked_request(item)
+                for item in _require_list(payload, "requests")
+            )
+        }
+        self._snapshots = {
+            snapshot.order.order_id: snapshot
+            for snapshot in (
+                _deserialize_snapshot(item)
+                for item in _require_list(payload, "snapshots")
+            )
+        }
+        self._order_aliases = {
+            alias: canonical_order_id
+            for alias, canonical_order_id in _require_string_mapping(
+                payload.get("order_aliases"),
+                "order_aliases",
+            ).items()
+        }
+
+    def _persist(self) -> None:
+        payload = {
+            "requests": [
+                _serialize_tracked_request(tracked)
+                for tracked in sorted(
+                    self._requests.values(),
+                    key=lambda tracked: tracked.request.request_id,
+                )
+            ],
+            "snapshots": [
+                _serialize_snapshot(snapshot) for snapshot in self.list_snapshots()
+            ],
+            "order_aliases": dict(sorted(self._order_aliases.items())),
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
 
 class OrderExecutionEngine:
@@ -124,7 +236,7 @@ class OrderExecutionEngine:
         trader: BrokerTrader,
         *,
         retry_policy: ExecutionRetryPolicy | None = None,
-        state_store: InMemoryExecutionStateStore | None = None,
+        state_store: ExecutionStateStore | None = None,
     ) -> None:
         self._trader = trader
         self._retry_policy = retry_policy or ExecutionRetryPolicy()
@@ -205,6 +317,9 @@ class OrderExecutionEngine:
 
     def get_order_snapshot(self, order_id: str) -> OrderExecutionSnapshot:
         return self._require_snapshot(order_id)
+
+    def list_order_snapshots(self) -> tuple[OrderExecutionSnapshot, ...]:
+        return self._state_store.list_snapshots()
 
     def _load_or_create_request(
         self,
@@ -301,3 +416,220 @@ def _apply_fills_to_order(
         updated_at=updated_at,
         filled_quantity=filled_quantity,
     )
+
+
+def _serialize_tracked_request(tracked: _TrackedRequest) -> dict[str, object]:
+    return {
+        "request": _serialize_request(tracked.request),
+        "order_id": tracked.order_id,
+    }
+
+
+def _deserialize_tracked_request(payload: object) -> _TrackedRequest:
+    mapping = _require_mapping_value(payload, "tracked request")
+    return _TrackedRequest(
+        request=_deserialize_request(mapping.get("request")),
+        order_id=_optional_text(mapping.get("order_id")),
+    )
+
+
+def _serialize_request(
+    request: OrderRequest | OrderAmendRequest | OrderCancelRequest,
+) -> dict[str, object]:
+    if isinstance(request, OrderRequest):
+        return {
+            "kind": "submit",
+            "request_id": request.request_id,
+            "symbol": request.symbol,
+            "side": request.side.value,
+            "quantity": request.quantity,
+            "limit_price": str(request.limit_price),
+            "requested_at": request.requested_at.isoformat(),
+            "order_type": request.order_type.value,
+        }
+    if isinstance(request, OrderAmendRequest):
+        return {
+            "kind": "amend",
+            "request_id": request.request_id,
+            "order_id": request.order_id,
+            "requested_at": request.requested_at.isoformat(),
+            "quantity": request.quantity,
+            "limit_price": (
+                None if request.limit_price is None else str(request.limit_price)
+            ),
+        }
+    return {
+        "kind": "cancel",
+        "request_id": request.request_id,
+        "order_id": request.order_id,
+        "requested_at": request.requested_at.isoformat(),
+    }
+
+
+def _deserialize_request(
+    payload: object,
+) -> OrderRequest | OrderAmendRequest | OrderCancelRequest:
+    mapping = _require_mapping_value(payload, "request")
+    kind = _require_text(mapping, "kind")
+    if kind == "submit":
+        return OrderRequest(
+            request_id=_require_text(mapping, "request_id"),
+            symbol=_require_text(mapping, "symbol"),
+            side=OrderSide(_require_text(mapping, "side")),
+            quantity=_require_int(mapping, "quantity"),
+            limit_price=_require_decimal(mapping, "limit_price"),
+            requested_at=_require_datetime(mapping, "requested_at"),
+            order_type=OrderType(_require_text(mapping, "order_type")),
+        )
+    if kind == "amend":
+        quantity = mapping.get("quantity")
+        return OrderAmendRequest(
+            request_id=_require_text(mapping, "request_id"),
+            order_id=_require_text(mapping, "order_id"),
+            requested_at=_require_datetime(mapping, "requested_at"),
+            quantity=None if quantity is None else _require_int(mapping, "quantity"),
+            limit_price=_optional_decimal(mapping, "limit_price"),
+        )
+    if kind == "cancel":
+        return OrderCancelRequest(
+            request_id=_require_text(mapping, "request_id"),
+            order_id=_require_text(mapping, "order_id"),
+            requested_at=_require_datetime(mapping, "requested_at"),
+        )
+    raise ValueError(f"unsupported serialized request kind: {kind}")
+
+
+def _serialize_snapshot(snapshot: OrderExecutionSnapshot) -> dict[str, object]:
+    return {
+        "order": _serialize_order(snapshot.order),
+        "fills": [_serialize_fill(fill) for fill in snapshot.fills],
+    }
+
+
+def _deserialize_snapshot(payload: object) -> OrderExecutionSnapshot:
+    mapping = _require_mapping_value(payload, "snapshot")
+    fills = tuple(_deserialize_fill(item) for item in _require_list(mapping, "fills"))
+    return OrderExecutionSnapshot(
+        order=_deserialize_order(mapping.get("order")),
+        fills=fills,
+    )
+
+
+def _serialize_order(order: ExecutionOrder) -> dict[str, object]:
+    return {
+        "order_id": order.order_id,
+        "symbol": order.symbol,
+        "side": order.side.value,
+        "quantity": order.quantity,
+        "limit_price": str(order.limit_price),
+        "status": order.status.value,
+        "created_at": order.created_at.isoformat(),
+        "updated_at": order.updated_at.isoformat(),
+        "filled_quantity": order.filled_quantity,
+    }
+
+
+def _deserialize_order(payload: object) -> ExecutionOrder:
+    mapping = _require_mapping_value(payload, "order")
+    return ExecutionOrder(
+        order_id=_require_text(mapping, "order_id"),
+        symbol=_require_text(mapping, "symbol"),
+        side=OrderSide(_require_text(mapping, "side")),
+        quantity=_require_int(mapping, "quantity"),
+        limit_price=_require_decimal(mapping, "limit_price"),
+        status=OrderStatus(_require_text(mapping, "status")),
+        created_at=_require_datetime(mapping, "created_at"),
+        updated_at=_require_datetime(mapping, "updated_at"),
+        filled_quantity=_require_int(mapping, "filled_quantity"),
+    )
+
+
+def _serialize_fill(fill: ExecutionFill) -> dict[str, object]:
+    return {
+        "fill_id": fill.fill_id,
+        "order_id": fill.order_id,
+        "symbol": fill.symbol,
+        "quantity": fill.quantity,
+        "price": str(fill.price),
+        "filled_at": fill.filled_at.isoformat(),
+    }
+
+
+def _deserialize_fill(payload: object) -> ExecutionFill:
+    mapping = _require_mapping_value(payload, "fill")
+    return ExecutionFill(
+        fill_id=_require_text(mapping, "fill_id"),
+        order_id=_require_text(mapping, "order_id"),
+        symbol=_require_text(mapping, "symbol"),
+        quantity=_require_int(mapping, "quantity"),
+        price=_require_decimal(mapping, "price"),
+        filled_at=_require_datetime(mapping, "filled_at"),
+    )
+
+
+def _require_string_mapping(value: object, field_name: str) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a mapping")
+    normalized: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise ValueError(f"{field_name} must contain string keys and values")
+        normalized[key] = item
+    return normalized
+
+
+def _require_list(mapping: dict[str, object], field_name: str) -> list[object]:
+    value = mapping.get(field_name)
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    return value
+
+
+def _require_mapping_value(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a mapping")
+    return value
+
+
+def _require_text(mapping: dict[str, object], field_name: str) -> str:
+    value = mapping.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-blank string")
+    return value
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("optional string value must be a string when provided")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _require_int(mapping: dict[str, object], field_name: str) -> int:
+    value = mapping.get(field_name)
+    if not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
+
+
+def _require_decimal(mapping: dict[str, object], field_name: str) -> Decimal:
+    value = _require_text(mapping, field_name)
+    return Decimal(value)
+
+
+def _optional_decimal(
+    mapping: dict[str, object],
+    field_name: str,
+) -> Decimal | None:
+    value = mapping.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string when provided")
+    return Decimal(value)
+
+
+def _require_datetime(mapping: dict[str, object], field_name: str) -> datetime:
+    return datetime.fromisoformat(_require_text(mapping, field_name))
