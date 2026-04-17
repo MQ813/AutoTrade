@@ -25,12 +25,18 @@ from autotrade.config import load_settings  # noqa: E402
 from autotrade.data import CsvBarStore  # noqa: E402
 from autotrade.data import CsvBarSource  # noqa: E402
 from autotrade.data import KST  # noqa: E402
+from autotrade.data import KrxRegularSessionCalendar  # noqa: E402
+from autotrade.data import Bar  # noqa: E402
 from autotrade.data import Timeframe  # noqa: E402
 from autotrade.data import validate_bar_series  # noqa: E402
 from autotrade.execution import FileExecutionStateStore  # noqa: E402
 from autotrade.report import FileNotifier  # noqa: E402
 from autotrade.runtime import LiveCycleRuntime  # noqa: E402
+from autotrade.runtime import RunnerStatus  # noqa: E402
+from autotrade.runtime import ScheduledRunner  # noqa: E402
 from autotrade.runtime import strategy_timeframe_for  # noqa: E402
+from autotrade.scheduler import FileSchedulerStateStore  # noqa: E402
+from autotrade.scheduler import ScheduledJob  # noqa: E402
 from autotrade.strategy import StrategyKind  # noqa: E402
 from autotrade.strategy import create_strategy  # noqa: E402
 
@@ -42,7 +48,7 @@ logger = logging.getLogger(__name__)
 def main() -> int:
     _configure_logging()
     parser = argparse.ArgumentParser(
-        description="AutoTrade 운영 사이클을 한 번 실행합니다."
+        description="AutoTrade 운영 사이클을 한 번 또는 연속 실행합니다."
     )
     parser.add_argument(
         "--strategy",
@@ -67,6 +73,17 @@ def main() -> int:
         type=Decimal,
         default=Decimal("100000000"),
         help="AUTOTRADE_BROKER_ENV=paper 일 때 사용할 초기 현금입니다.",
+    )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="scheduler state를 저장하며 next_run_at 기준으로 계속 실행합니다.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="continuous 모드에서 scheduler 평가 횟수를 제한합니다.",
     )
     args = parser.parse_args()
 
@@ -95,6 +112,9 @@ def main() -> int:
     bar_source = CsvBarSource(bar_root)
     notifier = FileNotifier(settings.log_dir / "notifications.jsonl")
     state_store = FileExecutionStateStore(settings.log_dir / "execution_state.json")
+    scheduler_state_store = FileSchedulerStateStore(
+        settings.log_dir / "scheduler_state.json"
+    )
     logger.info(
         "설정을 불러왔습니다. 환경=%s 전략=%s 대상종목=%s",
         settings.broker.environment,
@@ -104,18 +124,7 @@ def main() -> int:
     logger.info("바 데이터 경로: %s", bar_root)
     logger.info("알림 파일 경로: %s", notifier.path)
     logger.info("주문 상태 파일 경로: %s", state_store.path)
-    generated_at = datetime.now(KST)
-
-    try:
-        _collect_strategy_bars(
-            settings,
-            bar_root=bar_root,
-            timeframe=strategy_timeframe_for(strategy_kind),
-            generated_at=generated_at,
-        )
-    except (KoreaInvestmentBrokerError, ValueError) as exc:
-        logger.error("바 데이터 수집에 실패했습니다: %s", exc)
-        return 2
+    logger.info("scheduler 상태 파일 경로: %s", scheduler_state_store.path)
 
     if settings.broker.environment == "paper":
         logger.info(
@@ -142,8 +151,45 @@ def main() -> int:
         notifier=notifier,
         state_store=state_store,
     )
+    if args.continuous:
+        job = _build_scheduled_cycle_job(
+            runtime,
+            settings=settings,
+            bar_root=bar_root,
+        )
+        runner = ScheduledRunner(
+            jobs=(job,),
+            state_store=scheduler_state_store,
+            notifier=notifier,
+        )
+        logger.info("연속 운영 runner를 시작합니다.")
+        runner_result = runner.run_forever(max_iterations=args.max_iterations)
+        logger.info(
+            "연속 운영 runner가 종료되었습니다. 상태=%s",
+            runner_result.status.value,
+        )
+        print(f"runner 상태: {runner_result.status.value}")
+        if runner_result.stop_reason is not None:
+            print(f"중지 사유: {runner_result.stop_reason}")
+        print(f"알림 파일: {notifier.path}")
+        print(f"주문 상태 파일: {state_store.path}")
+        print(f"scheduler 상태 파일: {scheduler_state_store.path}")
+        if runner_result.status is RunnerStatus.SAFE_STOP:
+            return 1
+        return 0
+
+    generated_at = datetime.now(KST)
     logger.info("운영 사이클을 실행합니다.")
-    result = runtime.run(timestamp=generated_at)
+    try:
+        result = _execute_live_cycle(
+            runtime,
+            settings=settings,
+            bar_root=bar_root,
+            generated_at=generated_at,
+        )
+    except (KoreaInvestmentBrokerError, ValueError) as exc:
+        logger.error("바 데이터 수집에 실패했습니다: %s", exc)
+        return 2
     logger.info("운영 사이클 실행이 끝났습니다.")
 
     print(result.render_korean_summary())
@@ -227,6 +273,8 @@ def _collect_strategy_bars(
     window_start = _collection_window_start(timeframe, generated_at)
     bar_source = KoreaInvestmentBarSource(settings.broker)
     bar_store = CsvBarStore(bar_root)
+    cached_bar_source = CsvBarSource(bar_root)
+    calendar = KrxRegularSessionCalendar()
     logger.info(
         "전략 입력 바 수집을 시작합니다. 시작=%s 종료=%s 주기=%s",
         window_start.isoformat(),
@@ -234,26 +282,142 @@ def _collect_strategy_bars(
         timeframe.value,
     )
 
-    total_bars = 0
+    total_fetched_bars = 0
     for symbol in settings.target_symbols:
-        logger.info("바 수집을 요청합니다. symbol=%s", symbol)
-        bars = bar_source.load_bars(
+        cached_bars = cached_bar_source.load_bars(
             symbol,
             timeframe,
             start=window_start,
             end=generated_at,
         )
-        validate_bar_series(bars)
-        bar_store.store_bars(bars)
-        total_bars += len(bars)
+        request_start = _resolve_incremental_collection_start(
+            cached_bars,
+            timeframe=timeframe,
+            window_start=window_start,
+            generated_at=generated_at,
+            calendar=calendar,
+            symbol=symbol,
+        )
+        if request_start is None:
+            logger.info(
+                "이미 최신 바가 있어 수집 요청을 건너뜁니다. symbol=%s cached_bars=%d",
+                symbol,
+                len(cached_bars),
+            )
+            continue
+
         logger.info(
-            "바 수집을 마쳤습니다. symbol=%s bars=%d path=%s",
+            "바 수집을 요청합니다. symbol=%s start=%s end=%s",
             symbol,
-            len(bars),
+            request_start.isoformat(),
+            generated_at.isoformat(),
+        )
+        fetched_bars = bar_source.load_bars(
+            symbol,
+            timeframe,
+            start=request_start,
+            end=generated_at,
+        )
+        validate_bar_series(fetched_bars)
+        merged_bars = _merge_bar_series(cached_bars, fetched_bars)
+        validate_bar_series(merged_bars)
+        bar_store.store_bars(merged_bars)
+        total_fetched_bars += len(fetched_bars)
+        logger.info(
+            "바 수집을 마쳤습니다. symbol=%s fetched_bars=%d stored_bars=%d path=%s",
+            symbol,
+            len(fetched_bars),
+            len(merged_bars),
             bar_root / timeframe.value / f"{symbol}.csv",
         )
 
-    logger.info("전략 입력 바 수집을 완료했습니다. 총 바 수=%d", total_bars)
+    logger.info(
+        "전략 입력 바 수집을 완료했습니다. 총 신규 바 수=%d",
+        total_fetched_bars,
+    )
+
+
+def _execute_live_cycle(
+    runtime: LiveCycleRuntime,
+    *,
+    settings,
+    bar_root: Path,
+    generated_at: datetime,
+):
+    _collect_strategy_bars(
+        settings,
+        bar_root=bar_root,
+        timeframe=runtime.timeframe,
+        generated_at=generated_at,
+    )
+    return runtime.run(timestamp=generated_at)
+
+
+def _resolve_incremental_collection_start(
+    cached_bars: tuple[Bar, ...],
+    *,
+    timeframe: Timeframe,
+    window_start: datetime,
+    generated_at: datetime,
+    calendar: KrxRegularSessionCalendar,
+    symbol: str,
+) -> datetime | None:
+    if not cached_bars:
+        return window_start
+
+    try:
+        validate_bar_series(cached_bars, calendar=calendar)
+    except ValueError as exc:
+        logger.warning(
+            "기존 캐시 바가 완전하지 않아 전체 윈도우를 다시 수집합니다. symbol=%s reason=%s",
+            symbol,
+            exc,
+        )
+        return window_start
+
+    next_timestamp = calendar.next_timestamp(cached_bars[-1].timestamp, timeframe)
+    if next_timestamp > generated_at:
+        return None
+    return max(window_start, next_timestamp)
+
+
+def _merge_bar_series(
+    cached_bars: tuple[Bar, ...],
+    fetched_bars: tuple[Bar, ...],
+) -> tuple[Bar, ...]:
+    merged_by_timestamp = {bar.timestamp: bar for bar in cached_bars}
+    for bar in fetched_bars:
+        merged_by_timestamp[bar.timestamp] = bar
+    return tuple(
+        sorted(
+            merged_by_timestamp.values(),
+            key=lambda bar: bar.timestamp,
+        )
+    )
+
+
+def _build_scheduled_cycle_job(
+    runtime: LiveCycleRuntime,
+    *,
+    settings,
+    bar_root: Path,
+) -> ScheduledJob:
+    base_job = runtime.build_job()
+
+    def handler(context) -> str:
+        result = _execute_live_cycle(
+            runtime,
+            settings=settings,
+            bar_root=bar_root,
+            generated_at=context.scheduled_at,
+        )
+        return result.render_summary()
+
+    return ScheduledJob(
+        name=base_job.name,
+        phase=base_job.phase,
+        handler=handler,
+    )
 
 
 def _collection_window_start(timeframe: Timeframe, generated_at: datetime) -> datetime:

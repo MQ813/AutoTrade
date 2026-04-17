@@ -151,6 +151,15 @@ class JobRunResult:
 class SchedulerState:
     executed_runs: frozenset[ExecutedJobKey] = frozenset()
 
+    def retain_from(self, trading_day: date) -> SchedulerState:
+        return SchedulerState(
+            executed_runs=frozenset(
+                executed_run
+                for executed_run in self.executed_runs
+                if executed_run.scheduled_at.astimezone(KST).date() >= trading_day
+            )
+        )
+
     def is_executed(
         self,
         *,
