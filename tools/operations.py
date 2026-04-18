@@ -8,11 +8,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from autotrade.cli import main_weekly_review_compat  # noqa: E402
+from autotrade.cli import main as cli_main  # noqa: E402
 
 
 def main() -> int:
-    return main_weekly_review_compat()
+    return cli_main()
 
 
 if __name__ == "__main__":

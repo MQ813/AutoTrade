@@ -4,13 +4,13 @@ import importlib.util
 from pathlib import Path
 
 
-def test_main_delegates_to_live_cycle_compat(monkeypatch) -> None:
-    module = _load_live_cycle_module()
+def test_main_delegates_to_package_cli(monkeypatch) -> None:
+    module = _load_operations_module()
     captured: list[bool] = []
 
     monkeypatch.setattr(
         module,
-        "main_live_cycle_compat",
+        "cli_main",
         lambda: captured.append(True) or 0,
     )
 
@@ -18,12 +18,12 @@ def test_main_delegates_to_live_cycle_compat(monkeypatch) -> None:
     assert captured == [True]
 
 
-def _load_live_cycle_module():
+def _load_operations_module():
     root = Path(__file__).resolve().parents[3]
-    module_path = root / "tools" / "live_cycle.py"
-    spec = importlib.util.spec_from_file_location("live_cycle_tool", module_path)
+    module_path = root / "tools" / "operations.py"
+    spec = importlib.util.spec_from_file_location("operations_tool", module_path)
     if spec is None or spec.loader is None:
-        raise AssertionError("failed to create module spec for live_cycle.py")
+        raise AssertionError("failed to create module spec for operations.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

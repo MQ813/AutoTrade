@@ -9,26 +9,31 @@
 
 - 실전 환경에서는 `AUTOTRADE_BROKER_ENV=live`와 함께 `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`을 명시해 자동매매가 사용할 최대 운영 자금을 제한합니다.
 - 주문/체결 알림은 `report` 모듈의 `build_order_alert`, `build_fill_alert`, `publish_order_alert`, `publish_fill_alert`로 생성합니다.
-- `AUTOTRADE_TELEGRAM_ENABLED=true`이면 `tools/live_cycle.py`가 파일 notifier와 Telegram notifier를 함께 연결해 주문/체결/일일 리포트를 발행합니다.
-- `tools/weekly_review.py`도 기본적으로 저장소 루트의 `.env`를 읽고, 텔레그램이 켜져 있으면 주간 리뷰를 파일로 저장한 뒤 Telegram으로 발행합니다.
+- `AUTOTRADE_TELEGRAM_ENABLED=true`이면 공식 CLI인 `python -m autotrade.cli ...`가 파일 notifier와 Telegram notifier를 함께 연결해 주문/체결/일일 리포트를 발행합니다.
+- `python -m autotrade.cli weekly-review`는 기본적으로 저장소 루트의 `.env`를 읽고, 텔레그램이 켜져 있으면 주간 리뷰를 파일로 저장한 뒤 Telegram으로 발행합니다.
 - 텔레그램 채널은 `AUTOTRADE_TELEGRAM_CHAT_ID`를 기본값으로 쓰고, `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID`, `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`로 심각도별 분리를 선택할 수 있습니다.
-- `python tools/live_cycle.py`는 실행 시작 시 KIS에서 전략 주기에 맞는 바를 수집해 `AUTOTRADE_LOG_DIR/bars`에 저장한 뒤, 전략 신호, 리스크 검증, 주문 제출, 주문/체결 알림 발행을 한 번 실행합니다.
-- `python tools/live_cycle.py --continuous`는 `scheduler`를 함께 구동해 `next_run_at` 기준으로 대기/재개하며, `AUTOTRADE_LOG_DIR/scheduler_state.json`을 사용해 재시작 뒤에도 같은 슬롯을 중복 실행하지 않습니다.
-- `tools/live_cycle.py`는 기본적으로 저장소 루트의 `.env`를 읽고, 템플릿은 `docs/live_cycle.env.example`에 있습니다.
-- `tools/live_cycle.py` 기본 입력 경로는 `AUTOTRADE_LOG_DIR/bars`이고, 기본 산출물은 `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`, `AUTOTRADE_LOG_DIR/scheduler_state.json`입니다.
+- `python -m autotrade.cli run-once`는 실행 시작 시 KIS에서 전략 주기에 맞는 바를 수집해 `AUTOTRADE_LOG_DIR/bars`에 저장한 뒤, 전략 신호, 리스크 검증, 주문 제출, 주문/체결 알림 발행을 한 번 실행합니다.
+- `python -m autotrade.cli run-continuous`는 `scheduler`를 함께 구동해 `next_run_at` 기준으로 대기/재개하며, `AUTOTRADE_LOG_DIR/scheduler_state.json`을 사용해 재시작 뒤에도 같은 슬롯을 중복 실행하지 않습니다.
+- `run-continuous`의 `market_close` 단계는 일일 실행 리포트와 일일 점검 리포트를 남기고, 해당 거래일이 그 주의 마지막 거래일이면 주간 리뷰도 같은 흐름에서 생성합니다.
+- 공식 CLI는 `src/autotrade/cli.py`에 있고, 저장소 로컬 실행 호환 경로로 `tools/operations.py`도 유지합니다.
+- 공식 CLI는 기본적으로 저장소 루트의 `.env`를 읽고, 템플릿은 `docs/autotrade.env.example`에 있습니다.
+- 공식 CLI의 기본 입력 경로는 `AUTOTRADE_LOG_DIR/bars`이고, 기본 산출물은 `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`, `AUTOTRADE_LOG_DIR/scheduler_state.json`입니다.
 - 일일 점검 체크리스트는 `python tools/daily_inspection.py`로 생성하고, 주간 리뷰 템플릿은 `python tools/weekly_review.py`로 생성합니다.
 - 위 스크립트는 `AUTOTRADE_LOG_DIR` 아래에 텍스트 산출물을 남기며, 실제 운영 실행기나 외부 알림 채널은 상위 orchestration에서 연결합니다.
 
 ## 실행 순서
 
-1. `cp docs/live_cycle.env.example .env`
+1. `cp docs/autotrade.env.example .env`
 2. `.env` 안의 계좌, 종목, 로그 경로 값을 실제 환경에 맞게 수정합니다.
-3. `python tools/live_cycle.py`를 실행합니다.
+3. `python -m autotrade.cli run-once`를 실행합니다.
 4. stdout 한글 로그와 `AUTOTRADE_LOG_DIR/bars`, `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`을 확인합니다.
 
-필요하면 `python tools/live_cycle.py --env-file /path/to/custom.env`로 다른 `.env` 파일을 지정할 수 있습니다.
-지속 실행이 필요하면 `python tools/live_cycle.py --continuous`를 사용합니다.
-주간 리뷰만 따로 발행할 때도 `python tools/weekly_review.py --env-file /path/to/custom.env`를 사용할 수 있습니다.
+필요하면 `python -m autotrade.cli run-once --env-file /path/to/custom.env`로 다른 `.env` 파일을 지정할 수 있습니다.
+지속 실행이 필요하면 `python -m autotrade.cli run-continuous`를 사용합니다.
+장전 준비만 따로 실행할 때는 `python -m autotrade.cli market-open`을 사용합니다.
+장종료 정리만 따로 실행할 때는 `python -m autotrade.cli market-close`를 사용합니다.
+주간 리뷰만 따로 발행할 때는 `python -m autotrade.cli weekly-review --env-file /path/to/custom.env`를 사용할 수 있습니다.
+패키지가 import되지 않는 환경에서는 호환 경로인 `python tools/operations.py ...`도 계속 사용할 수 있습니다.
 
 ## 필수 설정
 
