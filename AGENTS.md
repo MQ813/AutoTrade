@@ -16,6 +16,7 @@ Primary goals are correctness, reproducibility, and safe refactoring.
 4. Run broader validation if the focused checks pass.
 5. Summarize what changed, what was validated, and any remaining risk.
 6. Refer docs/workflow.md for detailed flow.
+7. If changes are related to roadmap, update doc/roadmap.md
 
 ## Multi-agent workflow for large changes
 

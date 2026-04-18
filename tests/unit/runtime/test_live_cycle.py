@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 import logging
 
 from autotrade.broker import PaperBroker
+from autotrade.common import ExecutionFill
+from autotrade.common import ExecutionOrder
+from autotrade.common import Holding
+from autotrade.common import OrderCapacity
+from autotrade.common import OrderCancelRequest
 from autotrade.common import OrderRequest
 from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
+from autotrade.common import Quote
+from autotrade.common import Signal
+from autotrade.common import SignalAction
 from autotrade.config import AppSettings
 from autotrade.config import BrokerSettings
 from autotrade.data import Bar
@@ -17,9 +26,13 @@ from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
 from autotrade.data import Timeframe
 from autotrade.execution import FileExecutionStateStore
+from autotrade.execution import OrderExecutionEngine
 from autotrade.report import FileNotifier
+from autotrade.report import NotificationMessage
 from autotrade.runtime import LiveCycleRuntime
 from autotrade.runtime import strategy_timeframe_for
+from autotrade.risk import RiskSettings
+from autotrade.risk import RiskViolationCode
 from autotrade.strategy import StrategyKind
 from autotrade.strategy import create_strategy
 
@@ -159,6 +172,270 @@ def test_live_cycle_runtime_executes_sell_signal_for_existing_position(
     assert result.symbol_results[0].order.side is OrderSide.SELL
 
 
+def test_live_cycle_runtime_syncs_pending_buy_without_duplicate_submit(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="101")
+    broker = ScriptedLiveBroker(
+        submit_outcomes=(
+            _execution_order(
+                order_id="order-1",
+                symbol="069500",
+                side=OrderSide.BUY,
+                status=OrderStatus.ACKNOWLEDGED,
+                requested_at=bar.timestamp,
+                quantity=5,
+                limit_price=bar.close,
+            ),
+        ),
+        fill_outcomes={
+            "order-1": [
+                (
+                    _fill(
+                        "fill-1",
+                        order_id="order-1",
+                        symbol="069500",
+                        quantity=2,
+                        price=bar.close,
+                        filled_at=bar.timestamp,
+                    ),
+                )
+            ]
+        },
+    )
+    notifier = RecordingNotifier()
+    state_store = FileExecutionStateStore(log_dir / "execution_state.json")
+    seed_engine = OrderExecutionEngine(broker, state_store=state_store)
+    seed_engine.submit_order(
+        OrderRequest(
+            request_id="seed-buy",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=5,
+            limit_price=bar.close,
+            requested_at=bar.timestamp,
+        )
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=state_store,
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.fill_requests == ["order-1"]
+    assert result.symbol_results[0].status == "buy_pending"
+    assert result.symbol_results[0].order is not None
+    assert result.symbol_results[0].order.status is OrderStatus.PARTIALLY_FILLED
+    assert result.symbol_results[0].order.filled_quantity == 2
+    assert result.symbol_results[0].fills == (
+        _fill(
+            "fill-1",
+            order_id="order-1",
+            symbol="069500",
+            quantity=2,
+            price=bar.close,
+            filled_at=bar.timestamp,
+        ),
+    )
+    assert len(notifier.notifications) == 1
+    assert notifier.notifications[0].subject == "AutoTrade fill 069500 [2@101]"
+
+
+def test_live_cycle_runtime_cancels_open_buy_near_market_close_and_blocks_entry(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T15:00:00+09:00", close="101")
+    broker = ScriptedLiveBroker(
+        submit_outcomes=(
+            _execution_order(
+                order_id="order-1",
+                symbol="069500",
+                side=OrderSide.BUY,
+                status=OrderStatus.ACKNOWLEDGED,
+                requested_at=bar.timestamp,
+                quantity=5,
+                limit_price=bar.close,
+            ),
+        ),
+    )
+    notifier = RecordingNotifier()
+    state_store = FileExecutionStateStore(log_dir / "execution_state.json")
+    seed_engine = OrderExecutionEngine(broker, state_store=state_store)
+    seed_engine.submit_order(
+        OrderRequest(
+            request_id="seed-buy",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=5,
+            limit_price=bar.close,
+            requested_at=bar.timestamp,
+        )
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=state_store,
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+    canceled_snapshot = runtime.execution_engine.get_order_snapshot("order-1")
+
+    assert result.symbol_results[0].status == "entry_restricted"
+    assert [request.order_id for request in broker.cancel_requests] == ["order-1"]
+    assert canceled_snapshot.order.status is OrderStatus.CANCELED
+    assert len(notifier.notifications) == 2
+    assert notifier.notifications[0].subject == "AutoTrade order 069500 [CANCELED]"
+    assert notifier.notifications[1].subject == "AutoTrade risk block 069500"
+
+
+def test_live_cycle_runtime_applies_submitted_today_order_limit(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="101")
+    broker = ScriptedLiveBroker(
+        submit_outcomes=(
+            _execution_order(
+                order_id="order-1",
+                symbol="357870",
+                side=OrderSide.BUY,
+                status=OrderStatus.ACKNOWLEDGED,
+                requested_at=bar.timestamp,
+                quantity=1,
+                limit_price=Decimal("100"),
+            ),
+        ),
+    )
+    notifier = RecordingNotifier()
+    state_store = FileExecutionStateStore(log_dir / "execution_state.json")
+    seed_engine = OrderExecutionEngine(broker, state_store=state_store)
+    seed_engine.submit_order(
+        OrderRequest(
+            request_id="seed-buy",
+            symbol="357870",
+            side=OrderSide.BUY,
+            quantity=1,
+            limit_price=Decimal("100"),
+            requested_at=bar.timestamp,
+        )
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(
+            log_dir,
+            risk=RiskSettings(max_orders_per_day=1),
+        ),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=state_store,
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert result.symbol_results[0].status == "risk_blocked"
+    assert result.symbol_results[0].risk_check is not None
+    assert [
+        violation.code for violation in result.symbol_results[0].risk_check.violations
+    ] == [RiskViolationCode.ORDER_LIMIT_REACHED]
+
+
+def test_live_cycle_runtime_persists_intraday_loss_and_drawdown_baseline(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T14:00:00+09:00", close="101")
+    settings = _settings(
+        log_dir,
+        risk=RiskSettings(
+            max_loss=Decimal("10"),
+            max_drawdown=Decimal("0.01"),
+        ),
+    )
+    state_store = FileExecutionStateStore(log_dir / "execution_state.json")
+    first_broker = ScriptedLiveBroker(
+        holdings=(
+            Holding(
+                symbol="357870",
+                quantity=1,
+                average_price=Decimal("100"),
+                current_price=Decimal("100"),
+            ),
+        ),
+        cash_available=Decimal("900"),
+    )
+    first_runtime = LiveCycleRuntime(
+        settings=settings,
+        strategy=FixedStrategy(SignalAction.HOLD),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=first_broker,
+        broker_trader=first_broker,
+        notifier=RecordingNotifier(),
+        state_store=state_store,
+        clock=lambda: bar.timestamp,
+    )
+
+    first_result = first_runtime.run()
+
+    second_broker = ScriptedLiveBroker(
+        holdings=(
+            Holding(
+                symbol="357870",
+                quantity=1,
+                average_price=Decimal("100"),
+                current_price=Decimal("80"),
+            ),
+        ),
+        cash_available=Decimal("900"),
+    )
+    second_runtime = LiveCycleRuntime(
+        settings=settings,
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=second_broker,
+        broker_trader=second_broker,
+        notifier=RecordingNotifier(),
+        state_store=state_store,
+        clock=lambda: bar.timestamp,
+    )
+
+    second_result = second_runtime.run()
+    risk_check = second_result.symbol_results[0].risk_check
+
+    assert first_result.symbol_results[0].status == "hold"
+    assert second_result.symbol_results[0].status == "risk_blocked"
+    assert risk_check is not None
+    assert risk_check.loss_amount == Decimal("20")
+    assert risk_check.drawdown == Decimal("0.02")
+    assert {violation.code for violation in risk_check.violations} == {
+        RiskViolationCode.LOSS_LIMIT_REACHED,
+        RiskViolationCode.DRAWDOWN_LIMIT_REACHED,
+    }
+
+
 def _build_trend_bars(symbol: str, timeframe: Timeframe) -> tuple[Bar, ...]:
     calendar = KrxRegularSessionCalendar()
     timestamps = []
@@ -209,7 +486,69 @@ def _build_downtrend_bars(symbol: str, timeframe: Timeframe) -> tuple[Bar, ...]:
     return tuple(bars)
 
 
-def _settings(log_dir) -> AppSettings:
+def _bar(symbol: str, timestamp: str, *, close: str) -> Bar:
+    price = Decimal(close)
+    return Bar(
+        symbol=symbol,
+        timeframe=Timeframe.MINUTE_30,
+        timestamp=datetime.fromisoformat(timestamp),
+        open=price,
+        high=price + Decimal("1"),
+        low=price - Decimal("1"),
+        close=price,
+        volume=100,
+    )
+
+
+def _execution_order(
+    *,
+    order_id: str,
+    symbol: str,
+    side: OrderSide,
+    status: OrderStatus,
+    requested_at: datetime,
+    quantity: int,
+    limit_price: Decimal,
+    filled_quantity: int = 0,
+) -> ExecutionOrder:
+    return ExecutionOrder(
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        limit_price=limit_price,
+        status=status,
+        created_at=requested_at,
+        updated_at=requested_at,
+        filled_quantity=filled_quantity,
+    )
+
+
+def _fill(
+    fill_id: str,
+    *,
+    order_id: str,
+    symbol: str,
+    quantity: int,
+    price: Decimal,
+    filled_at: datetime,
+) -> ExecutionFill:
+    return ExecutionFill(
+        fill_id=fill_id,
+        order_id=order_id,
+        symbol=symbol,
+        quantity=quantity,
+        price=price,
+        filled_at=filled_at,
+    )
+
+
+def _settings(
+    log_dir,
+    *,
+    target_symbols: tuple[str, ...] = ("069500",),
+    risk: RiskSettings | None = None,
+) -> AppSettings:
     return AppSettings(
         broker=BrokerSettings(
             provider="koreainvestment",
@@ -218,6 +557,148 @@ def _settings(log_dir) -> AppSettings:
             account="12345678-01",
             environment="paper",
         ),
-        target_symbols=("069500",),
+        target_symbols=target_symbols,
         log_dir=log_dir,
+        risk=risk or RiskSettings(),
     )
+
+
+class FixedStrategy:
+    def __init__(self, action: SignalAction) -> None:
+        self._action = action
+
+    def generate_signal(self, bars: Sequence[Bar]) -> Signal:
+        latest_bar = bars[-1]
+        return Signal(
+            symbol=latest_bar.symbol,
+            action=self._action,
+            generated_at=latest_bar.timestamp,
+            reason="test-fixed-signal",
+        )
+
+
+class StaticBarSource:
+    def __init__(self, bars_by_symbol: dict[str, tuple[Bar, ...]]) -> None:
+        self._bars_by_symbol = bars_by_symbol
+
+    def load_bars(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> tuple[Bar, ...]:
+        bars = tuple(
+            bar
+            for bar in self._bars_by_symbol.get(symbol, ())
+            if bar.timeframe is timeframe
+            and (start is None or bar.timestamp >= start)
+            and (end is None or bar.timestamp <= end)
+        )
+        return bars
+
+
+class RecordingNotifier:
+    def __init__(self) -> None:
+        self.notifications: list[NotificationMessage] = []
+
+    def send(self, notification: NotificationMessage) -> None:
+        self.notifications.append(notification)
+
+
+class ScriptedLiveBroker:
+    def __init__(
+        self,
+        *,
+        holdings: tuple[Holding, ...] = (),
+        cash_available: Decimal = Decimal("1000000"),
+        submit_outcomes: tuple[ExecutionOrder, ...] = (),
+        fill_outcomes: dict[str, list[tuple[ExecutionFill, ...]]] | None = None,
+    ) -> None:
+        self._holdings = holdings
+        self._cash_available = cash_available
+        self._submit_outcomes = list(submit_outcomes)
+        self._fill_outcomes = fill_outcomes or {}
+        self._orders: dict[str, ExecutionOrder] = {}
+        self.submit_requests: list[OrderRequest] = []
+        self.cancel_requests: list[OrderCancelRequest] = []
+        self.fill_requests: list[str] = []
+
+    def get_quote(self, symbol: str) -> Quote:
+        return Quote(
+            symbol=symbol,
+            price=Decimal("100"),
+            as_of=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        )
+
+    def get_holdings(self) -> tuple[Holding, ...]:
+        return self._holdings
+
+    def get_order_capacity(
+        self,
+        symbol: str,
+        order_price: Decimal,
+    ) -> OrderCapacity:
+        max_quantity = 0
+        if order_price > Decimal("0"):
+            max_quantity = int(self._cash_available / order_price)
+        return OrderCapacity(
+            symbol=symbol,
+            order_price=order_price,
+            max_orderable_quantity=max_quantity,
+            cash_available=self._cash_available,
+        )
+
+    def submit_order(self, request: OrderRequest) -> ExecutionOrder:
+        self.submit_requests.append(request)
+        if self._submit_outcomes:
+            order = self._submit_outcomes.pop(0)
+        else:
+            order = _execution_order(
+                order_id=f"order-{len(self.submit_requests)}",
+                symbol=request.symbol,
+                side=request.side,
+                status=OrderStatus.ACKNOWLEDGED,
+                requested_at=request.requested_at,
+                quantity=request.quantity,
+                limit_price=request.limit_price,
+            )
+        self._orders[order.order_id] = order
+        return order
+
+    def amend_order(self, request):  # pragma: no cover - not used in these tests
+        raise NotImplementedError
+
+    def cancel_order(self, request: OrderCancelRequest) -> ExecutionOrder:
+        self.cancel_requests.append(request)
+        current = self._orders[request.order_id]
+        canceled = _execution_order(
+            order_id=current.order_id,
+            symbol=current.symbol,
+            side=current.side,
+            status=OrderStatus.CANCELED,
+            requested_at=current.created_at,
+            quantity=current.quantity,
+            limit_price=current.limit_price,
+            filled_quantity=current.filled_quantity,
+        )
+        canceled = ExecutionOrder(
+            order_id=canceled.order_id,
+            symbol=canceled.symbol,
+            side=canceled.side,
+            quantity=canceled.quantity,
+            limit_price=canceled.limit_price,
+            status=canceled.status,
+            created_at=current.created_at,
+            updated_at=request.requested_at,
+            filled_quantity=current.filled_quantity,
+        )
+        self._orders[current.order_id] = canceled
+        return canceled
+
+    def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
+        self.fill_requests.append(order_id)
+        scripted = self._fill_outcomes.get(order_id)
+        if not scripted:
+            return ()
+        return scripted.pop(0)

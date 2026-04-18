@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import date
 from datetime import datetime
 import logging
+from decimal import Decimal
+from pathlib import Path
 
 from autotrade.broker import BrokerReader
 from autotrade.broker import BrokerTrader
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
+from autotrade.common import Holding
+from autotrade.common import OrderCancelRequest
 from autotrade.common import OrderRequest
 from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
@@ -19,6 +25,7 @@ from autotrade.common import SignalAction
 from autotrade.config import AppSettings
 from autotrade.data import Bar
 from autotrade.data import KST
+from autotrade.data import KRX_SESSION_CLOSE
 from autotrade.data import Timeframe
 from autotrade.data import BarSource
 from autotrade.execution import OrderExecutionEngine
@@ -29,6 +36,7 @@ from autotrade.risk import RiskAccountSnapshot
 from autotrade.risk import RiskCheck
 from autotrade.risk import calculate_max_buy_quantity
 from autotrade.risk import evaluate_buy_order
+from autotrade.risk import should_cancel_unfilled_orders
 from autotrade.report import AlertSeverity
 from autotrade.report import NotificationMessage
 from autotrade.report import Notifier
@@ -42,6 +50,75 @@ from autotrade.strategy import StrategyKind
 from autotrade.strategy import create_strategy
 
 logger = logging.getLogger(__name__)
+ZERO = Decimal("0")
+_OPEN_ORDER_STATUSES = {
+    OrderStatus.PENDING,
+    OrderStatus.ACKNOWLEDGED,
+    OrderStatus.PARTIALLY_FILLED,
+    OrderStatus.CANCEL_PENDING,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _IntradayRiskState:
+    trading_day: date
+    session_start_equity: Decimal | None
+    peak_equity: Decimal | None
+
+    def __post_init__(self) -> None:
+        _require_optional_positive_decimal(
+            "session_start_equity",
+            self.session_start_equity,
+        )
+        _require_optional_positive_decimal("peak_equity", self.peak_equity)
+
+
+@dataclass(slots=True)
+class _FileIntradayRiskStateStore:
+    path: Path
+
+    def __post_init__(self) -> None:
+        if self.path.exists() and self.path.is_dir():
+            raise ValueError("path must point to a file")
+
+    def load(self) -> _IntradayRiskState | None:
+        if not self.path.exists():
+            return None
+        raw_payload = json.loads(self.path.read_text(encoding="utf-8"))
+        payload = _require_mapping(raw_payload, "serialized intraday risk state")
+        return _IntradayRiskState(
+            trading_day=date.fromisoformat(
+                _require_text(payload.get("trading_day"), "trading_day")
+            ),
+            session_start_equity=_require_optional_decimal(
+                payload.get("session_start_equity"),
+                "session_start_equity",
+            ),
+            peak_equity=_require_optional_decimal(
+                payload.get("peak_equity"),
+                "peak_equity",
+            ),
+        )
+
+    def save(self, state: _IntradayRiskState) -> None:
+        payload = {
+            "trading_day": state.trading_day.isoformat(),
+            "session_start_equity": _serialize_optional_decimal(
+                state.session_start_equity
+            ),
+            "peak_equity": _serialize_optional_decimal(state.peak_equity),
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingOrderFollowUp:
+    fills: tuple[ExecutionFill, ...] = ()
+    notifications: tuple[NotificationMessage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +205,18 @@ class LiveCycleRuntime:
     state_store: FileExecutionStateStore
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(KST))
     execution_engine: OrderExecutionEngine = field(init=False, repr=False)
+    _risk_state_store: _FileIntradayRiskStateStore = field(
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.execution_engine = OrderExecutionEngine(
             self.broker_trader,
             state_store=self.state_store,
+        )
+        self._risk_state_store = _FileIntradayRiskStateStore(
+            self.settings.log_dir / "intraday_risk_state.json"
         )
 
     def run(
@@ -212,9 +296,25 @@ class LiveCycleRuntime:
         _advance_market_if_supported(self.broker_trader, bars)
 
         logger.info("전략 신호를 계산합니다. symbol=%s bars=%d", symbol, len(bars))
+        follow_up = self._follow_up_open_orders(
+            symbol=symbol,
+            generated_at=generated_at,
+        )
+        published_fills = list(follow_up.fills)
+        published_notifications = list(follow_up.notifications)
         signal = self.strategy.generate_signal(bars)
         holdings = self.broker_reader.get_holdings()
         existing_snapshots = self.execution_engine.list_order_snapshots()
+        market_closing = _is_market_closing_window(generated_at, self.timeframe)
+        latest_bar = bars[-1]
+        order_price = latest_bar.close
+        capacity = self.broker_reader.get_order_capacity(symbol, order_price)
+        risk_snapshot = self._build_risk_account_snapshot(
+            generated_at=generated_at,
+            holdings=holdings,
+            cash_available=capacity.cash_available,
+            existing_snapshots=existing_snapshots,
+        )
         if signal.action is SignalAction.HOLD:
             logger.info("전략 신호가 HOLD라 주문하지 않습니다. symbol=%s", symbol)
             return LiveCycleSymbolResult(
@@ -223,6 +323,8 @@ class LiveCycleRuntime:
                 bars_loaded=len(bars),
                 signal=signal,
                 status="hold",
+                fills=tuple(published_fills),
+                notifications=tuple(published_notifications),
             )
         if signal.action is SignalAction.SELL:
             open_sell_order = _find_open_order(
@@ -243,7 +345,29 @@ class LiveCycleRuntime:
                     signal=signal,
                     status="sell_pending",
                     order=open_sell_order.order,
+                    fills=tuple(published_fills),
+                    notifications=tuple(published_notifications),
                 )
+
+            open_buy_order = _find_open_order(
+                existing_snapshots,
+                symbol=symbol,
+                side=OrderSide.BUY,
+            )
+            if open_buy_order is not None:
+                logger.info(
+                    "매도 신호 전에 기존 매수 미체결을 취소합니다. symbol=%s order_id=%s",
+                    symbol,
+                    open_buy_order.order.order_id,
+                )
+                _, cancel_notifications = self._cancel_open_order(
+                    open_buy_order.order.order_id,
+                    generated_at=generated_at,
+                    reason="signal_reversal_sell",
+                )
+                published_notifications.extend(cancel_notifications)
+                holdings = self.broker_reader.get_holdings()
+                existing_snapshots = self.execution_engine.list_order_snapshots()
 
             holding_quantity = next(
                 (
@@ -263,6 +387,8 @@ class LiveCycleRuntime:
                     bars_loaded=len(bars),
                     signal=signal,
                     status="sell_skipped",
+                    fills=tuple(published_fills),
+                    notifications=tuple(published_notifications),
                 )
 
             logger.info(
@@ -295,12 +421,10 @@ class LiveCycleRuntime:
                 requested_quantity=holding_quantity,
                 approved_quantity=holding_quantity,
                 order=synced_snapshot.order,
-                fills=new_fills,
-                notifications=notifications,
+                fills=tuple([*published_fills, *new_fills]),
+                notifications=tuple([*published_notifications, *notifications]),
             )
 
-        latest_bar = bars[-1]
-        order_price = latest_bar.close
         if any(
             holding.symbol == symbol and holding.quantity > 0 for holding in holdings
         ):
@@ -313,6 +437,8 @@ class LiveCycleRuntime:
                 bars_loaded=len(bars),
                 signal=signal,
                 status="already_held",
+                fills=tuple(published_fills),
+                notifications=tuple(published_notifications),
             )
 
         open_buy_order = _find_open_order(
@@ -333,14 +459,34 @@ class LiveCycleRuntime:
                 signal=signal,
                 status="buy_pending",
                 order=open_buy_order.order,
+                fills=tuple(published_fills),
+                notifications=tuple(published_notifications),
             )
 
-        capacity = self.broker_reader.get_order_capacity(symbol, order_price)
-        snapshot = RiskAccountSnapshot(
-            holdings=holdings,
-            cash_available=capacity.cash_available,
-            orders_submitted_today=0,
-        )
+        if market_closing:
+            logger.info(
+                "장 종료 임박 구간이라 신규 매수를 제한합니다. symbol=%s",
+                symbol,
+            )
+            notification = _build_risk_block_notification(
+                symbol=symbol,
+                signal=signal,
+                created_at=generated_at,
+                requested_quantity=0,
+                approved_quantity=0,
+                reason="market close entry restriction is active",
+            )
+            self.notifier.send(notification)
+            return LiveCycleSymbolResult(
+                symbol=symbol,
+                timeframe=self.timeframe,
+                bars_loaded=len(bars),
+                signal=signal,
+                status="entry_restricted",
+                notifications=tuple([*published_notifications, notification]),
+                fills=tuple(published_fills),
+            )
+
         logger.info(
             "매수 가능 수량을 계산합니다. symbol=%s price=%s cash=%s",
             symbol,
@@ -349,7 +495,7 @@ class LiveCycleRuntime:
         )
         requested_quantity = calculate_max_buy_quantity(
             settings=self.settings.risk,
-            snapshot=snapshot,
+            snapshot=risk_snapshot,
             symbol=symbol,
             order_price=order_price,
         )
@@ -372,7 +518,8 @@ class LiveCycleRuntime:
                 status="risk_blocked",
                 requested_quantity=0,
                 approved_quantity=0,
-                notifications=(notification,),
+                notifications=tuple([*published_notifications, notification]),
+                fills=tuple(published_fills),
             )
 
         proposal = ProposedBuyOrder(
@@ -385,7 +532,7 @@ class LiveCycleRuntime:
             symbol,
             requested_quantity,
         )
-        risk_check = evaluate_buy_order(self.settings.risk, snapshot, proposal)
+        risk_check = evaluate_buy_order(self.settings.risk, risk_snapshot, proposal)
         approved_quantity = risk_check.approved_quantity
         if approved_quantity <= 0:
             logger.info("리스크 검증에서 주문이 차단되었습니다. symbol=%s", symbol)
@@ -408,7 +555,8 @@ class LiveCycleRuntime:
                 requested_quantity=requested_quantity,
                 approved_quantity=0,
                 risk_check=risk_check,
-                notifications=(notification,),
+                notifications=tuple([*published_notifications, notification]),
+                fills=tuple(published_fills),
             )
 
         logger.info(
@@ -443,8 +591,174 @@ class LiveCycleRuntime:
             approved_quantity=approved_quantity,
             risk_check=risk_check,
             order=synced_snapshot.order,
-            fills=new_fills,
-            notifications=notifications,
+            fills=tuple([*published_fills, *new_fills]),
+            notifications=tuple([*published_notifications, *notifications]),
+        )
+
+    def _follow_up_open_orders(
+        self,
+        *,
+        symbol: str,
+        generated_at: datetime,
+    ) -> _PendingOrderFollowUp:
+        open_snapshots = tuple(
+            snapshot
+            for snapshot in self.execution_engine.list_order_snapshots()
+            if snapshot.order.symbol == symbol
+            and snapshot.order.status in _OPEN_ORDER_STATUSES
+        )
+        if not open_snapshots:
+            return _PendingOrderFollowUp()
+
+        published_fills: list[ExecutionFill] = []
+        published_notifications: list[NotificationMessage] = []
+        for snapshot in open_snapshots:
+            synced_snapshot = self.execution_engine.sync_fills(snapshot.order.order_id)
+            new_fills = _new_fills(snapshot, synced_snapshot)
+            for fill in new_fills:
+                published_notifications.append(
+                    publish_fill_alert(
+                        self.notifier,
+                        fill,
+                        created_at=generated_at,
+                    )
+                )
+            published_fills.extend(new_fills)
+
+            if not self._should_cancel_open_orders(generated_at):
+                continue
+            if _remaining_quantity(synced_snapshot.order) <= 0:
+                continue
+
+            logger.info(
+                "장 종료 정리로 미체결 주문을 취소합니다. order_id=%s symbol=%s",
+                synced_snapshot.order.order_id,
+                synced_snapshot.order.symbol,
+            )
+            _, cancel_notifications = self._cancel_open_order(
+                synced_snapshot.order.order_id,
+                generated_at=generated_at,
+                reason="market_close_cleanup",
+            )
+            published_notifications.extend(cancel_notifications)
+
+        return _PendingOrderFollowUp(
+            fills=tuple(published_fills),
+            notifications=tuple(published_notifications),
+        )
+
+    def _cancel_open_order(
+        self,
+        order_id: str,
+        *,
+        generated_at: datetime,
+        reason: str,
+    ) -> tuple[OrderExecutionSnapshot, tuple[NotificationMessage, ...]]:
+        current_snapshot = self.execution_engine.get_order_snapshot(order_id)
+        if current_snapshot.order.status not in _OPEN_ORDER_STATUSES:
+            return current_snapshot, ()
+        if _remaining_quantity(current_snapshot.order) <= 0:
+            return current_snapshot, ()
+
+        canceled_snapshot = self.execution_engine.cancel_order(
+            OrderCancelRequest(
+                request_id=_build_cancel_request_id(
+                    order_id,
+                    generated_at,
+                    reason=reason,
+                ),
+                order_id=order_id,
+                requested_at=generated_at,
+            )
+        )
+        if canceled_snapshot.order == current_snapshot.order:
+            return canceled_snapshot, ()
+        notification = publish_order_alert(
+            self.notifier,
+            canceled_snapshot.order,
+            created_at=generated_at,
+        )
+        return canceled_snapshot, (notification,)
+
+    def _build_risk_account_snapshot(
+        self,
+        *,
+        generated_at: datetime,
+        holdings: tuple[Holding, ...],
+        cash_available: Decimal,
+        existing_snapshots: Sequence[OrderExecutionSnapshot],
+    ) -> RiskAccountSnapshot:
+        current_equity = _calculate_current_equity(
+            holdings=holdings,
+            cash_available=cash_available,
+            existing_snapshots=existing_snapshots,
+        )
+        risk_state = self._update_intraday_risk_state(
+            generated_at=generated_at,
+            current_equity=current_equity,
+        )
+        return RiskAccountSnapshot(
+            holdings=holdings,
+            cash_available=cash_available,
+            total_equity=current_equity,
+            session_start_equity=risk_state.session_start_equity,
+            peak_equity=risk_state.peak_equity,
+            orders_submitted_today=_count_orders_submitted_today(
+                existing_snapshots,
+                generated_at,
+            ),
+            unfilled_order_count=_count_unfilled_orders(existing_snapshots),
+            market_closing=_is_market_closing_window(generated_at, self.timeframe),
+        )
+
+    def _update_intraday_risk_state(
+        self,
+        *,
+        generated_at: datetime,
+        current_equity: Decimal,
+    ) -> _IntradayRiskState:
+        trading_day = generated_at.astimezone(KST).date()
+        current_state = self._risk_state_store.load()
+        current_positive_equity = _positive_equity_or_none(current_equity)
+
+        if current_state is None or current_state.trading_day != trading_day:
+            next_state = _IntradayRiskState(
+                trading_day=trading_day,
+                session_start_equity=current_positive_equity,
+                peak_equity=current_positive_equity,
+            )
+        else:
+            next_state = _IntradayRiskState(
+                trading_day=trading_day,
+                session_start_equity=(
+                    current_state.session_start_equity or current_positive_equity
+                ),
+                peak_equity=_max_optional_decimal(
+                    current_state.peak_equity,
+                    current_positive_equity,
+                ),
+            )
+
+        self._risk_state_store.save(next_state)
+        return next_state
+
+    def _should_cancel_open_orders(self, generated_at: datetime) -> bool:
+        return should_cancel_unfilled_orders(
+            self.settings.risk,
+            RiskAccountSnapshot(
+                holdings=(),
+                cash_available=ZERO,
+                unfilled_order_count=max(
+                    _count_unfilled_orders(
+                        self.execution_engine.list_order_snapshots()
+                    ),
+                    1,
+                ),
+                market_closing=_is_market_closing_window(
+                    generated_at,
+                    self.timeframe,
+                ),
+            ),
         )
 
     def _submit_and_sync(
@@ -643,9 +957,153 @@ def _status_label(status: str) -> str:
         "submitted_sell": "매도 주문 제출",
         "already_held": "기보유 종목",
         "buy_pending": "기존 매수 주문 대기",
+        "entry_restricted": "장마감 신규 진입 제한",
         "risk_blocked": "리스크 차단",
         "submitted": "매수 주문 제출",
     }.get(status, status)
+
+
+def _new_fills(
+    previous_snapshot: OrderExecutionSnapshot,
+    current_snapshot: OrderExecutionSnapshot,
+) -> tuple[ExecutionFill, ...]:
+    known_fill_ids = {fill.fill_id for fill in previous_snapshot.fills}
+    return tuple(
+        fill for fill in current_snapshot.fills if fill.fill_id not in known_fill_ids
+    )
+
+
+def _remaining_quantity(order: ExecutionOrder) -> int:
+    return max(0, order.quantity - order.filled_quantity)
+
+
+def _is_market_closing_window(
+    generated_at: datetime,
+    timeframe: Timeframe,
+) -> bool:
+    local_time = generated_at.astimezone(KST)
+    session_close = local_time.replace(
+        hour=KRX_SESSION_CLOSE.hour,
+        minute=KRX_SESSION_CLOSE.minute,
+        second=0,
+        microsecond=0,
+    )
+    if timeframe is Timeframe.DAY:
+        return local_time >= session_close
+    return local_time + timeframe.interval >= session_close
+
+
+def _calculate_current_equity(
+    *,
+    holdings: Sequence[Holding],
+    cash_available: Decimal,
+    existing_snapshots: Sequence[OrderExecutionSnapshot],
+) -> Decimal:
+    reserved_cash = sum(
+        (
+            snapshot.order.limit_price * Decimal(_remaining_quantity(snapshot.order))
+            for snapshot in existing_snapshots
+            if snapshot.order.side is OrderSide.BUY
+            and snapshot.order.status in _OPEN_ORDER_STATUSES
+        ),
+        start=ZERO,
+    )
+    holdings_value = sum(
+        (
+            (holding.current_price or holding.average_price) * Decimal(holding.quantity)
+            for holding in holdings
+        ),
+        start=ZERO,
+    )
+    return cash_available + reserved_cash + holdings_value
+
+
+def _count_orders_submitted_today(
+    existing_snapshots: Sequence[OrderExecutionSnapshot],
+    generated_at: datetime,
+) -> int:
+    trading_day = generated_at.astimezone(KST).date()
+    return sum(
+        1
+        for snapshot in existing_snapshots
+        if snapshot.order.created_at.astimezone(KST).date() == trading_day
+    )
+
+
+def _count_unfilled_orders(
+    existing_snapshots: Sequence[OrderExecutionSnapshot],
+) -> int:
+    return sum(
+        1
+        for snapshot in existing_snapshots
+        if snapshot.order.status in _OPEN_ORDER_STATUSES
+        and _remaining_quantity(snapshot.order) > 0
+    )
+
+
+def _positive_equity_or_none(value: Decimal) -> Decimal | None:
+    if value <= ZERO:
+        return None
+    return value
+
+
+def _max_optional_decimal(
+    left: Decimal | None,
+    right: Decimal | None,
+) -> Decimal | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
+def _build_cancel_request_id(
+    order_id: str,
+    generated_at: datetime,
+    *,
+    reason: str,
+) -> str:
+    return f"live-cycle:cancel:{reason}:{order_id}:{generated_at.isoformat()}"
+
+
+def _require_optional_positive_decimal(
+    field_name: str,
+    value: Decimal | None,
+) -> None:
+    if value is not None and value <= ZERO:
+        raise ValueError(f"{field_name} must be positive when provided")
+
+
+def _serialize_optional_decimal(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _require_mapping(raw_value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"{field_name} must be a mapping")
+    if not all(isinstance(key, str) for key in raw_value):
+        raise ValueError(f"{field_name} must use string keys")
+    return raw_value
+
+
+def _require_text(raw_value: object, field_name: str) -> str:
+    if not isinstance(raw_value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return raw_value
+
+
+def _require_optional_decimal(
+    raw_value: object,
+    field_name: str,
+) -> Decimal | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ValueError(f"{field_name} must be a decimal string")
+    return Decimal(raw_value)
 
 
 def _find_open_order(
