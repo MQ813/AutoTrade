@@ -8,6 +8,7 @@ from decimal import Decimal
 from autotrade.config import AppSettings
 from autotrade.config import BrokerSettings
 from autotrade.config import RiskSettings
+from autotrade.config import TelegramSettings
 
 
 def test_app_settings_accepts_target_symbols() -> None:
@@ -19,6 +20,7 @@ def test_app_settings_accepts_target_symbols() -> None:
 
     assert settings.target_symbols == ("069500", "005930")
     assert settings.risk == RiskSettings()
+    assert settings.telegram == TelegramSettings()
 
 
 def test_app_settings_rejects_empty_target_symbols() -> None:
@@ -39,6 +41,11 @@ def test_risk_settings_accepts_operating_capital_limit() -> None:
 def test_risk_settings_rejects_non_positive_operating_capital_limit() -> None:
     with pytest.raises(ValueError):
         RiskSettings(max_operating_capital=Decimal("0"))
+
+
+def test_telegram_settings_require_bot_token_and_chat_id_when_enabled() -> None:
+    with pytest.raises(ValueError):
+        TelegramSettings(enabled=True)
 
 
 def _make_broker_settings() -> BrokerSettings:

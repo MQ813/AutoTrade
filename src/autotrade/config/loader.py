@@ -11,6 +11,7 @@ from typing import cast
 from autotrade.config.models import AppSettings
 from autotrade.config.models import BrokerSettings
 from autotrade.config.models import BrokerEnvironment
+from autotrade.config.models import TelegramSettings
 from autotrade.risk import RiskSettings
 
 SYMBOL_CODE_PATTERN = re.compile(r"^\d{6}$")
@@ -22,6 +23,9 @@ DEFAULT_RISK_MAX_CONCURRENT_HOLDINGS = "3"
 DEFAULT_RISK_TRADING_HALTED = "false"
 DEFAULT_RISK_EMERGENCY_STOP = "false"
 DEFAULT_RISK_CANCEL_UNFILLED_ON_MARKET_CLOSE = "true"
+DEFAULT_TELEGRAM_ENABLED = "false"
+DEFAULT_TELEGRAM_MAX_RETRIES = "3"
+DEFAULT_TELEGRAM_TIMEOUT_SECONDS = "10.0"
 
 
 class ConfigError(ValueError):
@@ -62,6 +66,55 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
         target_symbols=target_symbols,
         log_dir=log_dir,
         risk=_load_risk_settings(environment),
+        telegram=load_telegram_settings(environment),
+    )
+
+
+def load_telegram_settings(
+    environment: Mapping[str, str] | None = None,
+) -> TelegramSettings:
+    resolved_environment = os.environ if environment is None else environment
+    return TelegramSettings(
+        enabled=_parse_bool_setting(
+            _read_optional_value(
+                resolved_environment,
+                "AUTOTRADE_TELEGRAM_ENABLED",
+                default=DEFAULT_TELEGRAM_ENABLED,
+            ),
+            key="AUTOTRADE_TELEGRAM_ENABLED",
+        ),
+        bot_token=_read_optional_text(
+            resolved_environment,
+            "AUTOTRADE_TELEGRAM_BOT_TOKEN",
+        ),
+        chat_id=_read_optional_text(
+            resolved_environment,
+            "AUTOTRADE_TELEGRAM_CHAT_ID",
+        ),
+        warning_chat_id=_read_optional_text(
+            resolved_environment,
+            "AUTOTRADE_TELEGRAM_WARNING_CHAT_ID",
+        ),
+        error_chat_id=_read_optional_text(
+            resolved_environment,
+            "AUTOTRADE_TELEGRAM_ERROR_CHAT_ID",
+        ),
+        max_retries=_parse_int_setting(
+            _read_optional_value(
+                resolved_environment,
+                "AUTOTRADE_TELEGRAM_MAX_RETRIES",
+                default=DEFAULT_TELEGRAM_MAX_RETRIES,
+            ),
+            key="AUTOTRADE_TELEGRAM_MAX_RETRIES",
+        ),
+        timeout_seconds=_parse_float_setting(
+            _read_optional_value(
+                resolved_environment,
+                "AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS",
+                default=DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+            ),
+            key="AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS",
+        ),
     )
 
 
@@ -88,6 +141,15 @@ def _read_optional_value(
 
     value = raw_value.strip()
     return value or default
+
+
+def _read_optional_text(environment: Mapping[str, str], key: str) -> str | None:
+    raw_value = environment.get(key)
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    return value or None
 
 
 def _parse_broker_environment(raw_value: str) -> BrokerEnvironment:
@@ -233,6 +295,14 @@ def _parse_int_setting(raw_value: str, *, key: str) -> int:
         return int(normalized)
     except ValueError as error:
         raise ConfigError(f"{key} must be an integer") from error
+
+
+def _parse_float_setting(raw_value: str, *, key: str) -> float:
+    normalized = raw_value.strip()
+    try:
+        return float(normalized)
+    except ValueError as error:
+        raise ConfigError(f"{key} must be a float") from error
 
 
 def _parse_bool_setting(raw_value: str, *, key: str) -> bool:

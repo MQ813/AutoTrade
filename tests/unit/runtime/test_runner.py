@@ -10,6 +10,7 @@ from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
 from autotrade.report import NotificationMessage
 from autotrade.runtime import RunnerStatus
+from autotrade.runtime.runner import SafeStopContext
 from autotrade.runtime import ScheduledRunner
 from autotrade.scheduler import FileSchedulerStateStore
 from autotrade.scheduler import MarketSessionPhase
@@ -138,8 +139,74 @@ def test_scheduled_runner_writes_operations_log_for_executed_jobs(tmp_path) -> N
 
     assert len(run.executed_jobs) == 1
     log_paths = tuple(sorted((tmp_path / "logs").glob("operations_*.log")))
+    history_paths = tuple(sorted((tmp_path / "logs" / "job_history").glob("*.jsonl")))
     assert len(log_paths) == 1
+    assert len(history_paths) == 1
     assert "source=prepare" in log_paths[0].read_text(encoding="utf-8")
+    assert '"job_name": "prepare"' in history_paths[0].read_text(encoding="utf-8")
+
+
+def test_scheduled_runner_runs_safe_stop_handler_on_job_failure(tmp_path) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    notifier = RecordingNotifier()
+    contexts: list[SafeStopContext] = []
+    runner = ScheduledRunner(
+        jobs=(
+            ScheduledJob(
+                name="live_cycle",
+                phase=MarketSessionPhase.INTRADAY,
+                handler=lambda context: (_ for _ in ()).throw(RuntimeError("boom")),
+            ),
+        ),
+        state_store=state_store,
+        notifier=notifier,
+        clock=AdjustableClock(datetime(2026, 4, 10, 9, 30, tzinfo=KST)),
+        safe_stop_handler=lambda context: contexts.append(context) or "cleanup_done",
+    )
+
+    result = runner.run_forever(max_iterations=1)
+
+    assert result.status is RunnerStatus.SAFE_STOP
+    assert len(contexts) == 1
+    assert contexts[0].reason == "job_failure"
+    assert contexts[0].detail == "live_cycle:intraday:2026-04-10T09:30:00+09:00"
+    assert contexts[0].trading_day == date(2026, 4, 10)
+    assert len(contexts[0].runs) == 1
+    assert len(contexts[0].failures) == 1
+    assert "cleanup_detail=cleanup_done" in notifier.notifications[0].body
+
+
+def test_scheduled_runner_runs_safe_stop_handler_on_runner_exception(
+    tmp_path,
+) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    notifier = RecordingNotifier()
+    contexts: list[SafeStopContext] = []
+    runner = ScheduledRunner(
+        jobs=(
+            ScheduledJob(
+                name="prepare",
+                phase=MarketSessionPhase.MARKET_OPEN,
+                handler=lambda context: "prepared",
+            ),
+        ),
+        state_store=state_store,
+        notifier=notifier,
+        clock=AdjustableClock(datetime(2026, 4, 10, 9, 0, tzinfo=KST)),
+        sleep=lambda seconds: (_ for _ in ()).throw(RuntimeError("runner blew up")),
+        safe_stop_handler=lambda context: contexts.append(context) or "cleanup_done",
+    )
+
+    result = runner.run_forever(max_iterations=2)
+
+    assert result.status is RunnerStatus.SAFE_STOP
+    assert result.stop_reason == "runner blew up"
+    assert len(contexts) == 1
+    assert contexts[0].reason == "runner_exception"
+    assert contexts[0].detail == "runner blew up"
+    assert contexts[0].failures == ()
+    assert len(contexts[0].runs) == 1
+    assert "cleanup_detail=cleanup_done" in notifier.notifications[0].body
 
 
 @dataclass(slots=True)

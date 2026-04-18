@@ -28,6 +28,8 @@ def test_load_settings_returns_app_settings_with_default_provider(
     assert settings.broker.environment == "paper"
     assert settings.target_symbols == ("069500", "357870", "114800")
     assert settings.log_dir == tmp_path / "logs"
+    assert settings.telegram.enabled is False
+    assert settings.telegram.chat_id is None
 
 
 @pytest.mark.parametrize(
@@ -157,6 +159,41 @@ def test_load_settings_reads_risk_settings(tmp_path: Path) -> None:
     assert settings.risk.cancel_unfilled_orders_on_market_close is False
 
 
+def test_load_settings_reads_telegram_settings(tmp_path: Path) -> None:
+    settings = load_settings(
+        _make_env(
+            tmp_path,
+            AUTOTRADE_TELEGRAM_ENABLED="true",
+            AUTOTRADE_TELEGRAM_BOT_TOKEN="bot-token",
+            AUTOTRADE_TELEGRAM_CHAT_ID="-10012345",
+            AUTOTRADE_TELEGRAM_WARNING_CHAT_ID="-100999",
+            AUTOTRADE_TELEGRAM_ERROR_CHAT_ID="-100777",
+            AUTOTRADE_TELEGRAM_MAX_RETRIES="5",
+            AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS="30",
+        ),
+    )
+
+    assert settings.telegram.enabled is True
+    assert settings.telegram.bot_token == "bot-token"
+    assert settings.telegram.chat_id == "-10012345"
+    assert settings.telegram.warning_chat_id == "-100999"
+    assert settings.telegram.error_chat_id == "-100777"
+    assert settings.telegram.max_retries == 5
+    assert settings.telegram.timeout_seconds == 30.0
+
+
+def test_load_settings_rejects_enabled_telegram_without_required_values(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError):
+        load_settings(
+            _make_env(
+                tmp_path,
+                AUTOTRADE_TELEGRAM_ENABLED="true",
+            ),
+        )
+
+
 def test_load_settings_rejects_invalid_broker_environment(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         load_settings(
@@ -178,6 +215,9 @@ def test_load_settings_rejects_invalid_broker_environment(tmp_path: Path) -> Non
         ("AUTOTRADE_RISK_TRADING_HALTED", "maybe"),
         ("AUTOTRADE_RISK_EMERGENCY_STOP", "maybe"),
         ("AUTOTRADE_RISK_CANCEL_UNFILLED_ON_MARKET_CLOSE", "maybe"),
+        ("AUTOTRADE_TELEGRAM_ENABLED", "maybe"),
+        ("AUTOTRADE_TELEGRAM_MAX_RETRIES", "1.5"),
+        ("AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS", "abc"),
     ],
 )
 def test_load_settings_rejects_invalid_risk_values(

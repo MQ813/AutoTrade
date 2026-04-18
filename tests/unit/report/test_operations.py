@@ -15,15 +15,21 @@ from autotrade.report import InspectionStatus
 from autotrade.report import InspectionWindow
 from autotrade.report import LogSeverity
 from autotrade.report import NotificationMessage
+from autotrade.report import append_job_run_result
 from autotrade.report import build_daily_inspection_report
 from autotrade.report import build_daily_run_report
 from autotrade.report import build_fill_alert
 from autotrade.report import build_order_alert
+from autotrade.report import build_weekly_review_alert
 from autotrade.report import build_run_log_entries
 from autotrade.report import build_weekly_review_report
+from autotrade.report import load_daily_inspection_report
+from autotrade.report import load_daily_run_report
+from autotrade.report import load_job_run_results
 from autotrade.report import publish_fill_alert
 from autotrade.report import publish_order_alert
 from autotrade.report import publish_daily_run_alert
+from autotrade.report import publish_weekly_review_alert
 from autotrade.report import render_daily_inspection_report
 from autotrade.report import render_daily_run_report
 from autotrade.report import render_run_log
@@ -74,6 +80,32 @@ def test_build_run_log_entries_and_write_run_log(tmp_path) -> None:
     assert "source=heartbeat" in log_path.read_text(encoding="utf-8")
 
 
+def test_append_and_load_job_run_results_preserves_latest_records(tmp_path) -> None:
+    result = _job_result(
+        job_name="prepare",
+        phase=MarketSessionPhase.MARKET_OPEN,
+        scheduled_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        finished_at=datetime(2026, 4, 10, 9, 0, 5, tzinfo=KST),
+        success=True,
+        detail="prepared",
+    )
+    replacement = _job_result(
+        job_name="prepare",
+        phase=MarketSessionPhase.MARKET_OPEN,
+        scheduled_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        finished_at=datetime(2026, 4, 10, 9, 0, 6, tzinfo=KST),
+        success=False,
+        error="replayed failure",
+    )
+
+    append_job_run_result(tmp_path, result)
+    append_job_run_result(tmp_path, replacement)
+
+    loaded = load_job_run_results(tmp_path, date(2026, 4, 10))
+
+    assert loaded == (replacement,)
+
+
 def test_build_daily_run_report_and_write_file(tmp_path) -> None:
     results = (
         _job_result(
@@ -108,6 +140,7 @@ def test_build_daily_run_report_and_write_file(tmp_path) -> None:
     )
     rendered = render_daily_run_report(report)
     report_path = write_daily_run_report(tmp_path, report)
+    archived_report = load_daily_run_report(tmp_path, date(2026, 4, 10))
 
     assert report.total_jobs == 3
     assert report.successful_jobs == 2
@@ -117,6 +150,7 @@ def test_build_daily_run_report_and_write_file(tmp_path) -> None:
     assert "job=heartbeat" in rendered
     assert "error=heartbeat failed" in rendered
     assert report_path.exists()
+    assert archived_report == report
     assert "trading_day=2026-04-10" in report_path.read_text(encoding="utf-8")
 
 
@@ -221,6 +255,7 @@ def test_build_daily_inspection_report_and_write_file(tmp_path) -> None:
     )
     rendered = render_daily_inspection_report(report)
     report_path = write_daily_inspection_report(tmp_path, report)
+    archived_report = load_daily_inspection_report(tmp_path, date(2026, 4, 10))
 
     assert report.total_items == 3
     assert report.passed_items == 1
@@ -232,6 +267,7 @@ def test_build_daily_inspection_report_and_write_file(tmp_path) -> None:
     )
     assert "item_detail=fill mismatch" in rendered
     assert report_path.exists()
+    assert archived_report == report
     assert "trading_day=2026-04-10" in report_path.read_text(encoding="utf-8")
 
 
@@ -289,9 +325,57 @@ def test_build_weekly_review_report_aggregates_daily_reports(tmp_path) -> None:
     assert report.failed_inspection_items == 1
     assert report.pending_inspection_items == 0
     assert report.days_with_run_failures == (date(2026, 4, 6),)
+    assert report.expected_trading_days == (
+        date(2026, 4, 6),
+        date(2026, 4, 7),
+        date(2026, 4, 8),
+        date(2026, 4, 9),
+        date(2026, 4, 10),
+    )
+    assert report.missing_run_report_days == (
+        date(2026, 4, 7),
+        date(2026, 4, 8),
+        date(2026, 4, 9),
+        date(2026, 4, 10),
+    )
+    assert report.missing_inspection_report_days == (
+        date(2026, 4, 7),
+        date(2026, 4, 8),
+        date(2026, 4, 9),
+        date(2026, 4, 10),
+    )
+    assert report.repeated_failure_jobs == ()
     assert "day=2026-04-06 total_jobs=2 failed_jobs=1" in rendered
     assert "days_with_run_failures=2026-04-06" in rendered
+    assert (
+        "missing_run_report_days=2026-04-07,2026-04-08,2026-04-09,2026-04-10"
+        in rendered
+    )
     assert report_path.exists()
+
+
+def test_publish_weekly_review_alert_uses_notifier() -> None:
+    notifier = RecordingNotifier()
+    report = build_weekly_review_report(
+        date(2026, 4, 6),
+        generated_at=datetime(2026, 4, 12, 18, 0, tzinfo=KST),
+        daily_run_reports=(),
+        daily_inspection_reports=(),
+    )
+
+    built = build_weekly_review_alert(
+        report,
+        created_at=datetime(2026, 4, 12, 18, 1, tzinfo=KST),
+    )
+    published = publish_weekly_review_alert(
+        notifier,
+        report,
+        created_at=built.created_at,
+    )
+
+    assert built.severity == AlertSeverity.ERROR
+    assert "missing_run_report_days=" in built.body
+    assert notifier.notifications == [published]
 
 
 def _job_result(

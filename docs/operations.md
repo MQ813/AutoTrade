@@ -9,6 +9,9 @@
 
 - 실전 환경에서는 `AUTOTRADE_BROKER_ENV=live`와 함께 `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`을 명시해 자동매매가 사용할 최대 운영 자금을 제한합니다.
 - 주문/체결 알림은 `report` 모듈의 `build_order_alert`, `build_fill_alert`, `publish_order_alert`, `publish_fill_alert`로 생성합니다.
+- `AUTOTRADE_TELEGRAM_ENABLED=true`이면 `tools/live_cycle.py`가 파일 notifier와 Telegram notifier를 함께 연결해 주문/체결/일일 리포트를 발행합니다.
+- `tools/weekly_review.py`도 기본적으로 저장소 루트의 `.env`를 읽고, 텔레그램이 켜져 있으면 주간 리뷰를 파일로 저장한 뒤 Telegram으로 발행합니다.
+- 텔레그램 채널은 `AUTOTRADE_TELEGRAM_CHAT_ID`를 기본값으로 쓰고, `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID`, `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`로 심각도별 분리를 선택할 수 있습니다.
 - `python tools/live_cycle.py`는 실행 시작 시 KIS에서 전략 주기에 맞는 바를 수집해 `AUTOTRADE_LOG_DIR/bars`에 저장한 뒤, 전략 신호, 리스크 검증, 주문 제출, 주문/체결 알림 발행을 한 번 실행합니다.
 - `python tools/live_cycle.py --continuous`는 `scheduler`를 함께 구동해 `next_run_at` 기준으로 대기/재개하며, `AUTOTRADE_LOG_DIR/scheduler_state.json`을 사용해 재시작 뒤에도 같은 슬롯을 중복 실행하지 않습니다.
 - `tools/live_cycle.py`는 기본적으로 저장소 루트의 `.env`를 읽고, 템플릿은 `docs/live_cycle.env.example`에 있습니다.
@@ -25,6 +28,7 @@
 
 필요하면 `python tools/live_cycle.py --env-file /path/to/custom.env`로 다른 `.env` 파일을 지정할 수 있습니다.
 지속 실행이 필요하면 `python tools/live_cycle.py --continuous`를 사용합니다.
+주간 리뷰만 따로 발행할 때도 `python tools/weekly_review.py --env-file /path/to/custom.env`를 사용할 수 있습니다.
 
 ## 필수 설정
 
@@ -34,6 +38,16 @@
 - `AUTOTRADE_BROKER_ACCOUNT`
 - `AUTOTRADE_TARGET_SYMBOLS`
 - `AUTOTRADE_LOG_DIR`
+
+## 선택 설정
+
+- `AUTOTRADE_TELEGRAM_ENABLED`
+- `AUTOTRADE_TELEGRAM_BOT_TOKEN`
+- `AUTOTRADE_TELEGRAM_CHAT_ID`
+- `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID`
+- `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`
+- `AUTOTRADE_TELEGRAM_MAX_RETRIES`
+- `AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS`
 
 ## 장 시작 전
 
@@ -63,5 +77,6 @@
 - 실행 로그: 작업별 phase, 예정 시각, 성공/실패, 상세 메시지를 저장합니다.
 - 일일 리포트: 장 시작, 장중, 장마감별 작업 수와 실패 수를 요약합니다.
 - 알림: 실패가 있으면 `error`, 실행이 없으면 `warning`, 전부 성공이면 `info` 수준으로 발행합니다.
+- 텔레그램 알림: `429`, `5xx`, 네트워크 오류에는 재시도하고, 장문 메시지는 Telegram 제한 길이에 맞춰 분할합니다.
 - 일일 점검 리포트: 장 시작 전, 장중, 장마감 후 점검 항목을 `passed/failed/pending` 상태로 기록합니다.
 - 주간 리뷰 문서: 일일 실행 결과와 점검 상태를 주간 단위로 요약하고, 운영 회고 프롬프트를 남깁니다.

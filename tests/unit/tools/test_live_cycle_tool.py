@@ -11,6 +11,7 @@ from autotrade.common import Quote
 from autotrade.data import KST
 from autotrade.config import AppSettings
 from autotrade.config import BrokerSettings
+from autotrade.config import TelegramSettings
 from autotrade.data import Bar
 from autotrade.data import CsvBarStore
 from autotrade.data import Timeframe
@@ -385,6 +386,77 @@ def test_build_paper_broker_uses_override_without_kis_lookup(
     capacity = broker.get_order_capacity("069500", Decimal("1000"))
     assert initial_cash == Decimal("5000000")
     assert capacity.cash_available == Decimal("5000000")
+
+
+def test_build_safe_stop_cleanup_handler_uses_safe_stop_context() -> None:
+    module = _load_live_cycle_module()
+    captured: list[tuple[datetime, str, str]] = []
+
+    class FakeResult:
+        def render_summary(self) -> str:
+            return "cleanup_summary"
+
+    class FakeRuntime:
+        def run_safe_stop_cleanup(self, *, timestamp, reason, detail):
+            captured.append((timestamp, reason, detail))
+            return FakeResult()
+
+    handler = module._build_safe_stop_cleanup_handler(FakeRuntime())
+
+    summary = handler(
+        type(
+            "SafeStopContextStub",
+            (),
+            {
+                "triggered_at": datetime(2026, 4, 10, 11, 0, tzinfo=KST),
+                "reason": "runner_exception",
+                "detail": "scheduler loop crashed",
+            },
+        )()
+    )
+
+    assert summary == "cleanup_summary"
+    assert captured == [
+        (
+            datetime(2026, 4, 10, 11, 0, tzinfo=KST),
+            "runner_exception",
+            "scheduler loop crashed",
+        )
+    ]
+
+
+def test_build_notifier_returns_file_notifier_when_telegram_disabled(tmp_path) -> None:
+    module = _load_live_cycle_module()
+
+    notifier = module._build_notifier(_settings(tmp_path / "logs"))
+
+    assert isinstance(notifier, module.FileNotifier)
+
+
+def test_build_notifier_returns_composite_when_telegram_enabled(tmp_path) -> None:
+    module = _load_live_cycle_module()
+    settings = AppSettings(
+        broker=BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+        ),
+        target_symbols=("069500",),
+        log_dir=tmp_path / "logs",
+        telegram=TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-10012345",
+        ),
+    )
+
+    notifier = module._build_notifier(settings)
+
+    assert isinstance(notifier, module.CompositeNotifier)
+    assert isinstance(notifier.notifiers[0], module.FileNotifier)
+    assert isinstance(notifier.notifiers[1], module.TelegramNotifier)
 
 
 def _load_live_cycle_module():

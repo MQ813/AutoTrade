@@ -30,8 +30,11 @@ from autotrade.data import Bar  # noqa: E402
 from autotrade.data import Timeframe  # noqa: E402
 from autotrade.data import validate_bar_series  # noqa: E402
 from autotrade.execution import FileExecutionStateStore  # noqa: E402
+from autotrade.report import CompositeNotifier  # noqa: E402
 from autotrade.report import FileNotifier  # noqa: E402
+from autotrade.report import TelegramNotifier  # noqa: E402
 from autotrade.runtime import LiveCycleRuntime  # noqa: E402
+from autotrade.runtime import MarketCloseRuntime  # noqa: E402
 from autotrade.runtime import MarketOpenPreparationRuntime  # noqa: E402
 from autotrade.runtime import RunnerStatus  # noqa: E402
 from autotrade.runtime import ScheduledRunner  # noqa: E402
@@ -114,7 +117,8 @@ def main() -> int:
     bar_root = args.bar_root or (settings.log_dir / "bars")
     strategy_kind = StrategyKind(args.strategy)
     bar_source = CsvBarSource(bar_root)
-    notifier = FileNotifier(settings.log_dir / "notifications.jsonl")
+    notification_log_path = settings.log_dir / "notifications.jsonl"
+    notifier = _build_notifier(settings)
     state_store = FileExecutionStateStore(settings.log_dir / "execution_state.json")
     scheduler_state_store = FileSchedulerStateStore(
         settings.log_dir / "scheduler_state.json"
@@ -126,7 +130,7 @@ def main() -> int:
         ",".join(settings.target_symbols),
     )
     logger.info("바 데이터 경로: %s", bar_root)
-    logger.info("알림 파일 경로: %s", notifier.path)
+    logger.info("알림 파일 경로: %s", notification_log_path)
     logger.info("주문 상태 파일 경로: %s", state_store.path)
     logger.info("scheduler 상태 파일 경로: %s", scheduler_state_store.path)
 
@@ -174,17 +178,25 @@ def main() -> int:
             strategy_kind=strategy_kind.value,
             timeframe=runtime.timeframe,
         )
+        market_close_runtime = MarketCloseRuntime(
+            settings=settings,
+            broker_reader=broker_reader,
+            notifier=notifier,
+            state_store=state_store,
+        )
         preparation_job = preparation_runtime.build_job()
         job = _build_scheduled_cycle_job(
             runtime,
             settings=settings,
             bar_root=bar_root,
         )
+        market_close_job = market_close_runtime.build_job()
         runner = ScheduledRunner(
-            jobs=(preparation_job, job),
+            jobs=(preparation_job, job, market_close_job),
             state_store=scheduler_state_store,
             notifier=notifier,
             log_dir=settings.log_dir,
+            safe_stop_handler=_build_safe_stop_cleanup_handler(market_close_runtime),
         )
         logger.info("연속 운영 runner를 시작합니다.")
         runner_result = runner.run_forever(max_iterations=args.max_iterations)
@@ -195,7 +207,7 @@ def main() -> int:
         print(f"runner 상태: {runner_result.status.value}")
         if runner_result.stop_reason is not None:
             print(f"중지 사유: {runner_result.stop_reason}")
-        print(f"알림 파일: {notifier.path}")
+        print(f"알림 파일: {notification_log_path}")
         print(f"주문 상태 파일: {state_store.path}")
         print(f"scheduler 상태 파일: {scheduler_state_store.path}")
         if runner_result.status is RunnerStatus.SAFE_STOP:
@@ -217,13 +229,25 @@ def main() -> int:
     logger.info("운영 사이클 실행이 끝났습니다.")
 
     print(result.render_korean_summary())
-    print(f"알림 파일: {notifier.path}")
+    print(f"알림 파일: {notification_log_path}")
     print(f"주문 상태 파일: {state_store.path}")
     return 0
 
 
 def _configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+def _build_notifier(settings):
+    file_notifier = FileNotifier(settings.log_dir / "notifications.jsonl")
+    if not settings.telegram.enabled:
+        return file_notifier
+    return CompositeNotifier(
+        (
+            file_notifier,
+            TelegramNotifier(settings.telegram),
+        )
+    )
 
 
 def _resolve_environment(
@@ -290,9 +314,7 @@ def _collect_strategy_bars(
     generated_at: datetime,
 ) -> None:
     if settings.broker.provider != "koreainvestment":
-        raise ValueError(
-            "현재 자동 바 수집은 koreainvestment provider만 지원합니다."
-        )
+        raise ValueError("현재 자동 바 수집은 koreainvestment provider만 지원합니다.")
 
     window_start = _collection_window_start(timeframe, generated_at)
     bar_source = KoreaInvestmentBarSource(settings.broker)
@@ -442,6 +464,18 @@ def _build_scheduled_cycle_job(
         phase=base_job.phase,
         handler=handler,
     )
+
+
+def _build_safe_stop_cleanup_handler(runtime: MarketCloseRuntime):
+    def handler(context) -> str:
+        result = runtime.run_safe_stop_cleanup(
+            timestamp=context.triggered_at,
+            reason=context.reason,
+            detail=context.detail,
+        )
+        return result.render_summary()
+
+    return handler
 
 
 def _collection_window_start(timeframe: Timeframe, generated_at: datetime) -> datetime:

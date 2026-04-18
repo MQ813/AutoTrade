@@ -32,11 +32,43 @@ class BrokerSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramSettings:
+    enabled: bool = False
+    bot_token: str | None = None
+    chat_id: str | None = None
+    warning_chat_id: str | None = None
+    error_chat_id: str | None = None
+    max_retries: int = 3
+    timeout_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "bot_token",
+            "chat_id",
+            "warning_chat_id",
+            "error_chat_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and not value.strip():
+                raise ValueError(f"{field_name} must not be blank")
+        if self.enabled:
+            if self.bot_token is None:
+                raise ValueError("bot_token is required when telegram is enabled")
+            if self.chat_id is None:
+                raise ValueError("chat_id is required when telegram is enabled")
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     broker: BrokerSettings
     target_symbols: tuple[str, ...]
     log_dir: Path
     risk: RiskSettings = field(default_factory=RiskSettings)
+    telegram: TelegramSettings = field(default_factory=TelegramSettings)
 
     def __post_init__(self) -> None:
         if not self.target_symbols:
