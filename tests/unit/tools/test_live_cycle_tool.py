@@ -6,6 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from autotrade.common import OrderCapacity
+from autotrade.common import Quote
 from autotrade.data import KST
 from autotrade.config import AppSettings
 from autotrade.config import BrokerSettings
@@ -313,6 +315,78 @@ def test_build_scheduled_cycle_job_uses_context_scheduled_at(
     assert captured == [datetime(2026, 4, 10, 9, 30, tzinfo=KST)]
 
 
+def test_build_paper_broker_uses_kis_order_capacity_cash(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module = _load_live_cycle_module()
+    calls: list[tuple[str, str, Decimal | None]] = []
+
+    class FakeReader:
+        def __init__(self, settings: BrokerSettings) -> None:
+            assert settings.environment == "paper"
+
+        def get_quote(self, symbol: str) -> Quote:
+            calls.append(("quote", symbol, None))
+            return Quote(
+                symbol=symbol,
+                price=Decimal("12345"),
+                as_of=datetime(2026, 4, 10, 8, 50, tzinfo=KST),
+            )
+
+        def get_order_capacity(
+            self,
+            symbol: str,
+            order_price: Decimal,
+        ) -> OrderCapacity:
+            calls.append(("capacity", symbol, order_price))
+            return OrderCapacity(
+                symbol=symbol,
+                order_price=order_price,
+                max_orderable_quantity=8,
+                cash_available=Decimal("7654321"),
+            )
+
+    monkeypatch.setattr(module, "KoreaInvestmentBrokerReader", FakeReader)
+    settings = _settings(tmp_path / "logs")
+
+    broker, initial_cash = module._build_paper_broker(
+        settings,
+        paper_cash_override=None,
+    )
+
+    capacity = broker.get_order_capacity("069500", Decimal("1000"))
+    assert calls == [
+        ("quote", "069500", None),
+        ("capacity", "069500", Decimal("12345")),
+    ]
+    assert initial_cash == Decimal("7654321")
+    assert capacity.cash_available == Decimal("7654321")
+
+
+def test_build_paper_broker_uses_override_without_kis_lookup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module = _load_live_cycle_module()
+
+    class FakeReader:
+        def __init__(self, settings: BrokerSettings) -> None:
+            raise AssertionError("KIS lookup should be skipped when paper cash is set")
+
+    monkeypatch.setattr(module, "KoreaInvestmentBrokerReader", FakeReader)
+    settings = _settings(tmp_path / "logs")
+
+    broker, initial_cash = module._build_paper_broker(
+        settings,
+        paper_cash_override=Decimal("5000000"),
+    )
+
+    capacity = broker.get_order_capacity("069500", Decimal("1000"))
+    assert initial_cash == Decimal("5000000")
+    assert capacity.cash_available == Decimal("5000000")
+
+
 def _load_live_cycle_module():
     root = Path(__file__).resolve().parents[3]
     module_path = root / "tools" / "live_cycle.py"
@@ -334,4 +408,18 @@ def _make_bar(symbol: str, timeframe: Timeframe, timestamp: str) -> Bar:
         low=Decimal("99"),
         close=Decimal("104"),
         volume=10,
+    )
+
+
+def _settings(log_dir: Path) -> AppSettings:
+    return AppSettings(
+        broker=BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+        ),
+        target_symbols=("069500",),
+        log_dir=log_dir,
     )

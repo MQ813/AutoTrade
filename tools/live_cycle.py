@@ -32,6 +32,7 @@ from autotrade.data import validate_bar_series  # noqa: E402
 from autotrade.execution import FileExecutionStateStore  # noqa: E402
 from autotrade.report import FileNotifier  # noqa: E402
 from autotrade.runtime import LiveCycleRuntime  # noqa: E402
+from autotrade.runtime import MarketOpenPreparationRuntime  # noqa: E402
 from autotrade.runtime import RunnerStatus  # noqa: E402
 from autotrade.runtime import ScheduledRunner  # noqa: E402
 from autotrade.runtime import strategy_timeframe_for  # noqa: E402
@@ -71,8 +72,11 @@ def main() -> int:
     parser.add_argument(
         "--paper-cash",
         type=Decimal,
-        default=Decimal("100000000"),
-        help="AUTOTRADE_BROKER_ENV=paper 일 때 사용할 초기 현금입니다.",
+        default=None,
+        help=(
+            "AUTOTRADE_BROKER_ENV=paper 일 때 내부 PaperBroker 초기 현금을 "
+            "수동 지정합니다. 지정하지 않으면 KIS paper 주문가능현금을 사용합니다."
+        ),
     )
     parser.add_argument(
         "--continuous",
@@ -127,11 +131,24 @@ def main() -> int:
     logger.info("scheduler 상태 파일 경로: %s", scheduler_state_store.path)
 
     if settings.broker.environment == "paper":
-        logger.info(
-            "내부 PaperBroker로 실행합니다. 초기 현금=%s",
-            args.paper_cash,
-        )
-        broker = PaperBroker(initial_cash=args.paper_cash)
+        try:
+            broker, paper_cash = _build_paper_broker(
+                settings,
+                paper_cash_override=args.paper_cash,
+            )
+        except KoreaInvestmentBrokerError as exc:
+            logger.error("KIS paper 예수금 조회에 실패했습니다: %s", exc)
+            return 2
+        if args.paper_cash is None:
+            logger.info(
+                "KIS paper 주문가능현금으로 내부 PaperBroker를 초기화합니다. 초기 현금=%s",
+                paper_cash,
+            )
+        else:
+            logger.info(
+                "사용자 지정 초기 현금으로 내부 PaperBroker를 실행합니다. 초기 현금=%s",
+                paper_cash,
+            )
         broker_reader = broker
         broker_trader = broker
     else:
@@ -152,15 +169,22 @@ def main() -> int:
         state_store=state_store,
     )
     if args.continuous:
+        preparation_runtime = MarketOpenPreparationRuntime(
+            settings=settings,
+            strategy_kind=strategy_kind.value,
+            timeframe=runtime.timeframe,
+        )
+        preparation_job = preparation_runtime.build_job()
         job = _build_scheduled_cycle_job(
             runtime,
             settings=settings,
             bar_root=bar_root,
         )
         runner = ScheduledRunner(
-            jobs=(job,),
+            jobs=(preparation_job, job),
             state_store=scheduler_state_store,
             notifier=notifier,
+            log_dir=settings.log_dir,
         )
         logger.info("연속 운영 runner를 시작합니다.")
         runner_result = runner.run_forever(max_iterations=args.max_iterations)
@@ -424,6 +448,21 @@ def _collection_window_start(timeframe: Timeframe, generated_at: datetime) -> da
     if timeframe is Timeframe.DAY:
         return generated_at - timedelta(days=180)
     return generated_at - timedelta(days=21)
+
+
+def _build_paper_broker(
+    settings,
+    *,
+    paper_cash_override: Decimal | None,
+) -> tuple[PaperBroker, Decimal]:
+    if paper_cash_override is not None:
+        return PaperBroker(initial_cash=paper_cash_override), paper_cash_override
+
+    reader = KoreaInvestmentBrokerReader(settings.broker)
+    target_symbol = settings.target_symbols[0]
+    quote = reader.get_quote(target_symbol)
+    capacity = reader.get_order_capacity(target_symbol, quote.price)
+    return PaperBroker(initial_cash=capacity.cash_available), capacity.cash_available
 
 
 if __name__ == "__main__":

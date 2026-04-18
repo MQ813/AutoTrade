@@ -118,6 +118,30 @@ def test_scheduled_runner_sleeps_to_next_trading_day_after_holiday(tmp_path) -> 
     assert sleep_calls == [322200.0]
 
 
+def test_scheduled_runner_writes_operations_log_for_executed_jobs(tmp_path) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    runner = ScheduledRunner(
+        jobs=(
+            ScheduledJob(
+                name="prepare",
+                phase=MarketSessionPhase.MARKET_OPEN,
+                handler=lambda context: "prepared",
+            ),
+        ),
+        state_store=state_store,
+        notifier=RecordingNotifier(),
+        log_dir=tmp_path / "logs",
+        clock=AdjustableClock(datetime(2026, 4, 10, 9, 0, tzinfo=KST)),
+    )
+
+    run = runner.run_once()
+
+    assert len(run.executed_jobs) == 1
+    log_paths = tuple(sorted((tmp_path / "logs").glob("operations_*.log")))
+    assert len(log_paths) == 1
+    assert "source=prepare" in log_paths[0].read_text(encoding="utf-8")
+
+
 @dataclass(slots=True)
 class RecordingNotifier:
     notifications: list[NotificationMessage] = field(default_factory=list)

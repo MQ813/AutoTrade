@@ -8,6 +8,7 @@ from datetime import date
 from datetime import datetime
 from enum import StrEnum
 import logging
+from pathlib import Path
 import time
 
 from autotrade.data import KST
@@ -15,6 +16,8 @@ from autotrade.data import KrxRegularSessionCalendar
 from autotrade.report import AlertSeverity
 from autotrade.report import NotificationMessage
 from autotrade.report import Notifier
+from autotrade.report import build_run_log_entries
+from autotrade.report import write_run_log
 from autotrade.scheduler import JobRunResult
 from autotrade.scheduler import ScheduledJob
 from autotrade.scheduler import SchedulerConfig
@@ -48,6 +51,7 @@ class ScheduledRunner:
     scheduler_config: SchedulerConfig | None = None
     scheduler_retry_policy: SchedulerRetryPolicy | None = None
     calendar: KrxRegularSessionCalendar | None = None
+    log_dir: Path | None = None
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(KST))
     sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
     stop_on_job_failure: bool = True
@@ -71,6 +75,11 @@ class ScheduledRunner:
         )
         persisted_state = run.state.retain_from(_trading_day(evaluated_at))
         self.state_store.save(persisted_state)
+        if self.log_dir is not None and run.executed_jobs:
+            write_run_log(
+                self.log_dir,
+                build_run_log_entries(run.executed_jobs),
+            )
         logger.info(
             "운영 runner가 scheduler 평가를 마쳤습니다. 실행job수=%d 다음실행=%s",
             len(run.executed_jobs),
