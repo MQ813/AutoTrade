@@ -82,7 +82,8 @@ KIS_AMENDABLE_ORDER_PATH: Final[str] = (
 KIS_ORDER_HISTORY_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 KIS_LIMIT_ORDER_DIVISION: Final[str] = "00"
 KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.1
-KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS: Final[tuple[float, ...]] = (1.1, 2.2, 3.3)
+KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 0.5
+KIS_ORDER_HISTORY_LOOKUP_DELAY_MULTIPLIERS: Final[tuple[int, ...]] = (1, 2, 3)
 KIS_DAILY_CHART_PAGE_SIZE: Final[int] = 100
 KIS_INTRADAY_CHART_PAGE_SIZE: Final[int] = 120
 KIS_INTRADAY_MAX_PAGE_COUNT: Final[int] = 64
@@ -173,8 +174,15 @@ class _KoreaInvestmentApiClient:
         self._token_cache_path = token_cache_path or _default_token_cache_path(settings)
         self._raw_log_dir = _resolve_raw_log_directory(settings)
         self._min_request_interval_seconds = _resolve_min_request_interval_seconds(
+            settings=settings,
             transport=transport,
             explicit_seconds=min_request_interval_seconds,
+        )
+        self._order_history_lookup_delays_seconds = (
+            _resolve_order_history_lookup_delays_seconds(
+                settings=settings,
+                explicit_seconds=min_request_interval_seconds,
+            )
         )
         self._request_throttle = (
             _request_throttle_for(settings)
@@ -1027,7 +1035,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         reference_time: datetime,
     ) -> Mapping[str, object]:
         normalized_order_id = order_id.strip()
-        for delay_seconds in (*KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS, None):
+        for delay_seconds in (*self._order_history_lookup_delays_seconds, None):
             records = self._load_order_records(reference_time)
             exact_match = _find_order_record_by_field(
                 records,
@@ -1059,7 +1067,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             return cached_record
 
         normalized_order_id = order_id.strip()
-        for delay_seconds in (*KIS_ORDER_HISTORY_LOOKUP_DELAYS_SECONDS, None):
+        for delay_seconds in (*self._order_history_lookup_delays_seconds, None):
             history_match = _find_matching_order_record(
                 self._load_order_records(reference_time),
                 normalized_order_id,
@@ -1824,6 +1832,7 @@ def _request_throttle_for(settings: BrokerSettings) -> _RequestThrottle:
 
 def _resolve_min_request_interval_seconds(
     *,
+    settings: BrokerSettings,
     transport: HttpTransport | None,
     explicit_seconds: float | None,
 ) -> float:
@@ -1833,6 +1842,28 @@ def _resolve_min_request_interval_seconds(
         return explicit_seconds
     if transport is not None:
         return 0.0
+    return _default_min_request_interval_seconds_for(settings.environment)
+
+
+def _resolve_order_history_lookup_delays_seconds(
+    *,
+    settings: BrokerSettings,
+    explicit_seconds: float | None,
+) -> tuple[float, ...]:
+    base_interval_seconds = (
+        explicit_seconds
+        if explicit_seconds is not None
+        else _default_min_request_interval_seconds_for(settings.environment)
+    )
+    return tuple(
+        base_interval_seconds * multiplier
+        for multiplier in KIS_ORDER_HISTORY_LOOKUP_DELAY_MULTIPLIERS
+    )
+
+
+def _default_min_request_interval_seconds_for(environment: str) -> float:
+    if environment == "live":
+        return KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS
     return KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
 
 

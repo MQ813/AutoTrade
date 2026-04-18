@@ -18,6 +18,9 @@ from autotrade.broker.korea_investment import KoreaInvestmentBarSource
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerError
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
+from autotrade.broker.korea_investment import KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
+from autotrade.broker.korea_investment import KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS
+from autotrade.broker.korea_investment import _resolve_min_request_interval_seconds
 from autotrade.broker.korea_investment import _split_account
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
@@ -633,7 +636,7 @@ def test_korea_investment_broker_trader_retries_when_order_history_is_delayed() 
         "/uapi/hashkey",
         "/uapi/domestic-stock/v1/trading/order-rvsecncl",
     ]
-    assert sleeps == [1.1]
+    assert sleeps == [KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS]
 
 
 def test_korea_investment_broker_trader_matches_zero_padded_order_ids() -> None:
@@ -1319,6 +1322,24 @@ def test_split_account_rejects_invalid_digit_structure(
 ) -> None:
     with pytest.raises(KoreaInvestmentBrokerError, match=message):
         _split_account(account, environment=environment)
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ("paper", KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS),
+        ("live", KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS),
+    ],
+)
+def test_resolve_min_request_interval_seconds_uses_environment_default(
+    environment: BrokerEnvironment,
+    expected: float,
+) -> None:
+    assert _resolve_min_request_interval_seconds(
+        settings=_make_settings(environment),
+        transport=None,
+        explicit_seconds=None,
+    ) == expected
 
 
 def _make_settings(environment: BrokerEnvironment = "paper") -> BrokerSettings:
