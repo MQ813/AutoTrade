@@ -34,6 +34,11 @@ def main_weekly_review_compat(argv: Sequence[str] | None = None) -> int:
     return main(["weekly-review", *resolved_argv])
 
 
+def main_daily_inspection_compat(argv: Sequence[str] | None = None) -> int:
+    resolved_argv = list(sys.argv[1:] if argv is None else argv)
+    return main(["daily-inspection", *resolved_argv])
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AutoTrade 운영 작업을 실행합니다.")
     subparsers = parser.add_subparsers(dest="command")
@@ -109,6 +114,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     weekly_review_parser.set_defaults(handler=operations._handle_weekly_review)
 
+    daily_inspection_parser = subparsers.add_parser(
+        "daily-inspection",
+        help="수동 일일 점검 체크리스트 파일만 생성합니다.",
+    )
+    daily_inspection_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
+    )
+    daily_inspection_parser.set_defaults(handler=operations._handle_daily_inspection)
+
     return parser
 
 
@@ -144,6 +161,7 @@ def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
 
 __all__ = [
     "main",
+    "main_daily_inspection_compat",
     "main_live_cycle_compat",
     "main_weekly_review_compat",
 ]

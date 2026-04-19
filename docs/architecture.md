@@ -51,11 +51,47 @@
 
 ## Report
 
+`src/autotrade/report/operation_models.py`
+
+- 운영 리포트 모델과 `Notifier` protocol은 모델 모듈에 두고, 데이터 유효성 검증을 여기서 고정합니다.
+
+`src/autotrade/report/operation_builders.py`
+
+- 일일 점검, 일일 실행, 주간 리뷰 집계를 만드는 계산 로직만 담당합니다.
+
+`src/autotrade/report/operation_renderers.py`
+
+- 텍스트 리포트 렌더링만 담당해 모델 계산과 파일 기록을 분리합니다.
+
+`src/autotrade/report/operation_storage.py`
+
+- JSON archive, job history, 텍스트 파일 기록을 담당합니다.
+
+`src/autotrade/report/operation_alerts.py`
+
+- 주문/체결/일일/주간 알림 message 조립과 notifier 발행만 담당합니다.
+
 `src/autotrade/report/operations.py`
 
-- 스케줄러 실행 결과를 운영 로그 항목으로 변환합니다.
-- 일일 실행 결과를 phase별 요약이 포함된 텍스트 리포트로 렌더링합니다.
-- 알림은 `Notifier` protocol로 분리해 전송 채널 의존성을 모듈 밖으로 유지합니다.
+- 기존 import 호환용 facade이며, 위 모듈의 public helper를 재수출합니다.
 - 백테스트 리포트는 기존 `src/autotrade/report/backtest.py`를 그대로 유지하고, 운영 리포트와 분리합니다.
+
+## Runtime Operations
+
+`src/autotrade/runtime/operations.py`
+
+- CLI handler와 호환용 private export만 유지합니다.
+
+`src/autotrade/runtime/operation_environment.py`
+
+- `.env` 파싱과 셸 환경 병합, 설정 로딩 오류 메시지를 담당합니다.
+
+`src/autotrade/runtime/operation_services.py`
+
+- notifier, broker, live runtime 조립을 담당합니다.
+
+`src/autotrade/runtime/operation_flows.py`
+
+- 바 수집, live-cycle orchestration, market-close 후 주간 리뷰 생성 흐름을 담당합니다.
 
 이 구조는 파싱, 스케줄 판단, 실행, 출력, 파일 기록을 분리해 이후 실제 실행기와 알림 전송 어댑터를 안전하게 연결하는 것을 목표로 합니다.

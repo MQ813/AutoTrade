@@ -10,6 +10,7 @@ def test_build_parser_exposes_expected_subcommands() -> None:
     )
 
     assert set(subparsers_action.choices) == {
+        "daily-inspection",
         "run-once",
         "run-continuous",
         "market-open",
@@ -44,3 +45,16 @@ def test_main_weekly_review_compat_routes_to_new_subcommand(monkeypatch) -> None
 
     assert cli.main_weekly_review_compat(["--env-file", "/tmp/.env"]) == 0
     assert captured == [["weekly-review", "--env-file", "/tmp/.env"]]
+
+
+def test_main_daily_inspection_compat_routes_to_new_subcommand(monkeypatch) -> None:
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "main",
+        lambda argv: captured.append(list(argv)) or 0,
+    )
+
+    assert cli.main_daily_inspection_compat(["--env-file", "/tmp/.env"]) == 0
+    assert captured == [["daily-inspection", "--env-file", "/tmp/.env"]]
