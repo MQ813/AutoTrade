@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .python-version
 .venv/
+src/*.egg-info/
 ~$*.docx
 test_paper.sh
 test_paper.log
