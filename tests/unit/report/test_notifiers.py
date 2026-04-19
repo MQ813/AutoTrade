@@ -145,9 +145,9 @@ def test_telegram_notifier_splits_long_messages() -> None:
         requests.append(request)
         return TelegramHttpResponse(
             status=200,
-            body=json.dumps({"ok": True, "result": {"message_id": len(requests)}}).encode(
-                "utf-8"
-            ),
+            body=json.dumps(
+                {"ok": True, "result": {"message_id": len(requests)}}
+            ).encode("utf-8"),
             headers={},
         )
 
@@ -170,6 +170,8 @@ def test_telegram_notifier_splits_long_messages() -> None:
     )
 
     assert len(requests) >= 3
-    decoded_payloads = [json.loads(request.body.decode("utf-8")) for request in requests]
+    decoded_payloads = [
+        json.loads(request.body.decode("utf-8")) for request in requests
+    ]
     assert all(payload["chat_id"] == "-100base" for payload in decoded_payloads)
     assert all(len(payload["text"]) <= 4096 for payload in decoded_payloads)

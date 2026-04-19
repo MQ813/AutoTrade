@@ -183,8 +183,7 @@ def write_replay_log(
         raise ValueError("log_entries must not be empty")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = (
-        log_dir
-        / f"replay_{log_entries[-1].timestamp.strftime('%Y%m%d_%H%M%S_%f')}.log"
+        log_dir / f"replay_{log_entries[-1].timestamp.strftime('%Y%m%d_%H%M%S_%f')}.log"
     )
     log_path.write_text(render_replay_log(log_entries), encoding="utf-8")
     return log_path

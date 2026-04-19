@@ -178,7 +178,7 @@ def _build_summary(
     trades: tuple[BacktestTrade, ...],
     start_timestamp,
     end_timestamp,
-    ) -> BacktestPerformanceSummary:
+) -> BacktestPerformanceSummary:
     final_equity = start_equity if not snapshots else snapshots[-1].total_equity
     net_profit = final_equity - start_equity
     total_return = net_profit / start_equity
@@ -253,15 +253,13 @@ def _build_overfit_check(
         )
 
     reasons: list[str] = []
-    if (
-        in_sample.total_return > Decimal("0")
-        and out_of_sample.total_return <= Decimal("0")
+    if in_sample.total_return > Decimal("0") and out_of_sample.total_return <= Decimal(
+        "0"
     ):
         reasons.append("out_of_sample_return_reversal")
-    elif (
-        in_sample.total_return > Decimal("0")
-        and out_of_sample.total_return < in_sample.total_return * Decimal("0.5")
-    ):
+    elif in_sample.total_return > Decimal(
+        "0"
+    ) and out_of_sample.total_return < in_sample.total_return * Decimal("0.5"):
         reasons.append("out_of_sample_return_degradation")
 
     if recent is not None and recent.total_return < Decimal("0"):

@@ -60,6 +60,40 @@ def test_file_execution_state_store_persists_snapshots_across_restart(
     assert second_trader.submit_calls == 0
 
 
+def test_file_execution_state_store_recovers_from_corrupted_file(tmp_path) -> None:
+    path = tmp_path / "execution_state.json"
+    path.write_text("{not-json", encoding="utf-8")
+
+    request = OrderRequest(
+        request_id="req-1",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=10,
+        limit_price=Decimal("10000"),
+        requested_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+    )
+    trader = RecordingTrader(
+        submit_order_result=_order(
+            order_id="order-1",
+            status=OrderStatus.ACKNOWLEDGED,
+            requested_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        ),
+    )
+
+    engine = OrderExecutionEngine(
+        trader,
+        state_store=FileExecutionStateStore(path),
+    )
+    snapshot = engine.submit_order(request)
+
+    assert snapshot.order.order_id == "order-1"
+    backups = tuple(tmp_path.glob("execution_state.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{not-json"
+    assert path.exists()
+    assert '"order_id": "order-1"' in path.read_text(encoding="utf-8")
+
+
 def _order(
     *,
     order_id: str,

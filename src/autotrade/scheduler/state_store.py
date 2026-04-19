@@ -4,12 +4,18 @@ import json
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
+from json import JSONDecodeError
+import logging
 from pathlib import Path
 from typing import Protocol
 
+from autotrade.common.persistence import move_corrupt_file
+from autotrade.common.persistence import write_text_atomically
 from autotrade.scheduler.runtime import ExecutedJobKey
 from autotrade.scheduler.runtime import MarketSessionPhase
 from autotrade.scheduler.runtime import SchedulerState
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulerStateStore(Protocol):
@@ -40,13 +46,23 @@ class FileSchedulerStateStore:
     def load(self) -> SchedulerState:
         if not self.path.exists():
             return SchedulerState()
-        raw_payload = json.loads(self.path.read_text(encoding="utf-8"))
-        payload = _require_mapping(raw_payload, "serialized scheduler state")
-        executed_runs = frozenset(
-            _deserialize_executed_run(item)
-            for item in _require_list(payload.get("executed_runs"), "executed_runs")
-        )
-        return SchedulerState(executed_runs=executed_runs)
+        try:
+            raw_payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = _require_mapping(raw_payload, "serialized scheduler state")
+            executed_runs = frozenset(
+                _deserialize_executed_run(item)
+                for item in _require_list(payload.get("executed_runs"), "executed_runs")
+            )
+            return SchedulerState(executed_runs=executed_runs)
+        except (JSONDecodeError, ValueError) as error:
+            backup_path = move_corrupt_file(self.path)
+            logger.warning(
+                "손상된 scheduler 상태 파일을 백업하고 초기화합니다. path=%s backup=%s reason=%s",
+                self.path,
+                backup_path,
+                error,
+            )
+            return SchedulerState()
 
     def save(self, state: SchedulerState) -> None:
         payload = {
@@ -62,10 +78,9 @@ class FileSchedulerStateStore:
                 )
             ]
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        write_text_atomically(
+            self.path,
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
         )
 
 

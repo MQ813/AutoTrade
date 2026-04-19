@@ -566,18 +566,18 @@ AutoTrade/
 ### 세부 로드맵
 
 #### 8.9.1 주문/체결 정합성 보정
-- [ ] `PaperBroker`가 주문 생성 시각 이전 바를 다시 체결 처리하지 않도록 보호 로직 추가
-- [ ] 모의체결에서 `updated_at >= created_at` 같은 시간 정합성 불변식 강화
-- [ ] 한국투자 체결 동기화를 aggregate 덮어쓰기 대신 부분체결 증가 이력을 보존하는 방식으로 수정
-- [ ] 주문 상태 동기화 후 부분체결 증가가 알림과 일일 집계에 반영되도록 execution merge 규칙 보정
-- [ ] paper/replay/live 공통 주문 상태 시나리오에 대한 회귀 테스트 보강
+- [x] `PaperBroker`가 주문 생성 시각 이전 바를 다시 체결 처리하지 않도록 보호 로직 추가
+- [x] 모의체결에서 `updated_at >= created_at` 같은 시간 정합성 불변식 강화
+- [x] 한국투자 체결 동기화를 aggregate 덮어쓰기 대신 부분체결 증가 이력을 보존하는 방식으로 수정
+- [x] 주문 상태 동기화 후 부분체결 증가가 알림과 일일 집계에 반영되도록 execution merge 규칙 보정
+- [x] paper/replay/live 공통 주문 상태 시나리오에 대한 회귀 테스트 보강
 
 #### 8.9.2 장애/복구 안정성 강화
-- [ ] `URLError`, timeout, 응답 파싱 실패 등 외부 API 오류를 브로커 계층에서 일관된 도메인 예외로 정규화
-- [ ] `run-once`, `run-continuous`, `market-close`, `weekly-review` 경로의 종료 코드와 오류 로그 정책 통일
-- [ ] execution/scheduler/intraday risk 상태 파일을 임시 파일 + replace 방식의 원자 저장으로 전환
-- [ ] 손상된 상태 파일 감지 시 복구 또는 초기화 정책 정의
-- [ ] 장중 강제 종료 후 재기동 시나리오를 리플레이/단위 테스트로 보강
+- [x] `URLError`, timeout, 응답 파싱 실패 등 외부 API 오류를 브로커 계층에서 일관된 도메인 예외로 정규화
+- [x] `run-once`, `run-continuous`, `market-close`, `weekly-review` 경로의 종료 코드와 오류 로그 정책 통일
+- [x] execution/scheduler/intraday risk 상태 파일을 임시 파일 + replace 방식의 원자 저장으로 전환
+- [x] 손상된 상태 파일 감지 시 복구 또는 초기화 정책 정의
+- [x] 장중 강제 종료 후 재기동 시나리오를 리플레이/단위 테스트로 보강
 
 #### 8.9.3 구조 정리 및 청소
 - [ ] `runtime/operations.py`를 CLI 핸들러, 환경 로딩, 서비스 조립, 운영 플로우 orchestration 경계로 분리
@@ -587,8 +587,8 @@ AutoTrade/
 - [ ] `*.egg-info`, `Zone.Identifier`, `__pycache__` 같은 생성물/불필요 파일 정리 및 ignore 규칙 보강
 
 ### 단계 완료 조건
-- [ ] paper 모의체결이 주문 시각 이후 데이터만 기준으로 동작하고 관련 회귀 테스트 통과
-- [ ] 부분체결 증가 이력과 알림이 실제 주문 상태 변화에 맞게 보존
+- [x] paper 모의체결이 주문 시각 이후 데이터만 기준으로 동작하고 관련 회귀 테스트 통과
+- [x] 부분체결 증가 이력과 알림이 실제 주문 상태 변화에 맞게 보존
 - [ ] 외부 API 장애와 상태 파일 손상 상황에서 복구 또는 안전 정지 정책이 일관되게 동작
 - [ ] 실전 경로와 분리된 불필요 파일/경로 정리가 끝나고 운영 문서가 최신 구조를 반영
 

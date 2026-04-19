@@ -35,9 +35,7 @@ def main_weekly_review_compat(argv: Sequence[str] | None = None) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="AutoTrade 운영 작업을 실행합니다."
-    )
+    parser = argparse.ArgumentParser(description="AutoTrade 운영 작업을 실행합니다.")
     subparsers = parser.add_subparsers(dest="command")
 
     run_once_parser = subparsers.add_parser(

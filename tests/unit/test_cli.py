@@ -6,9 +6,7 @@ import autotrade.cli as cli
 def test_build_parser_exposes_expected_subcommands() -> None:
     parser = cli._build_parser()
     subparsers_action = next(
-        action
-        for action in parser._actions
-        if action.dest == "command"
+        action for action in parser._actions if action.dest == "command"
     )
 
     assert set(subparsers_action.choices) == {

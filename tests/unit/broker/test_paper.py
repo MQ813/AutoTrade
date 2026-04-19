@@ -138,6 +138,39 @@ def test_paper_broker_snapshot_restores_open_orders_and_positions() -> None:
     assert restored.snapshot().cash == Decimal("1055")
 
 
+def test_paper_broker_defers_fill_until_bar_at_or_after_order_time() -> None:
+    broker = PaperBroker(Decimal("1000"))
+    broker.advance_bar(_bar("2026-04-13T09:00:00+09:00", close="100", low="99"))
+
+    resting_buy = broker.submit_order(
+        OrderRequest(
+            request_id="buy-late",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=5,
+            limit_price=Decimal("100"),
+            requested_at=_dt("2026-04-13T09:30:00+09:00"),
+        )
+    )
+
+    broker.advance_bar(_bar("2026-04-13T09:00:00+09:00", close="99", low="99"))
+
+    assert resting_buy.status is OrderStatus.ACKNOWLEDGED
+    assert broker.get_fills(resting_buy.order_id) == ()
+
+    broker.advance_bar(_bar("2026-04-13T10:00:00+09:00", close="99", low="99"))
+
+    fills = broker.get_fills(resting_buy.order_id)
+    stored_order = next(
+        order
+        for order in broker.snapshot().orders
+        if order.order_id == resting_buy.order_id
+    )
+
+    assert fills[0].filled_at == _dt("2026-04-13T10:00:00+09:00")
+    assert stored_order.updated_at >= stored_order.created_at
+
+
 def _bar(
     timestamp: str,
     *,

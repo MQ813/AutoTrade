@@ -5,6 +5,7 @@ from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import parse_qs
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -124,7 +125,6 @@ def test_korea_investment_broker_reader_returns_standard_models() -> None:
         max_orderable_quantity=13,
         cash_available=Decimal("133250"),
     )
-
     assert [request.method for request in transport.requests] == [
         "POST",
         "GET",
@@ -157,6 +157,55 @@ def test_korea_investment_broker_reader_returns_standard_models() -> None:
         "CMA_EVLU_AMT_ICLD_YN": ["N"],
         "OVRS_ICLD_YN": ["N"],
     }
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (URLError("connection reset"), "network request failed"),
+        (TimeoutError("timed out"), "request timed out"),
+    ],
+)
+def test_korea_investment_broker_reader_normalizes_transport_failures(
+    error: Exception,
+    message: str,
+) -> None:
+    def broken_transport(request: HttpRequest) -> HttpResponse:
+        raise error
+
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=broken_transport,
+    )
+
+    with pytest.raises(KoreaInvestmentBrokerError, match=message):
+        reader.get_quote("069500")
+
+
+def test_korea_investment_broker_reader_normalizes_invalid_json_response() -> None:
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=RecordingTransport(
+            {
+                ("POST", "/oauth2/tokenP"): json_response(
+                    {"access_token": "token-123"}
+                ),
+                ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): (
+                    HttpResponse(
+                        status=200,
+                        headers={"content-type": "application/json"},
+                        body=b"{invalid-json",
+                    )
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(
+        KoreaInvestmentBrokerError,
+        match="response body is not valid JSON",
+    ):
+        reader.get_quote("069500")
 
 
 def test_korea_investment_logs_raw_http_exchange_for_paper_requests(
@@ -426,7 +475,9 @@ def test_korea_investment_broker_trader_submits_limit_order_with_hashkey() -> No
     }
 
 
-def test_korea_investment_broker_trader_amends_and_cancels_using_order_history() -> None:
+def test_korea_investment_broker_trader_amends_and_cancels_using_order_history() -> (
+    None
+):
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
@@ -540,11 +591,14 @@ def test_korea_investment_broker_trader_amends_and_cancels_using_order_history()
     }
 
 
-def test_korea_investment_broker_trader_returns_aggregate_fill_snapshot() -> None:
+def test_korea_investment_broker_trader_returns_cumulative_fill_snapshot() -> None:
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
-            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response(
                 {
                     "rt_cd": "0",
                     "output1": [
@@ -568,7 +622,7 @@ def test_korea_investment_broker_trader_returns_aggregate_fill_snapshot() -> Non
 
     assert fills == (
         ExecutionFill(
-            fill_id="order-1:aggregate",
+            fill_id="order-1:cumulative",
             order_id="order-1",
             symbol="069500",
             quantity=2,
@@ -643,7 +697,10 @@ def test_korea_investment_broker_trader_matches_zero_padded_order_ids() -> None:
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
-            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response(
                 {
                     "rt_cd": "0",
                     "output1": [_order_history_row(order_id="12093")],
@@ -678,8 +735,9 @@ def test_korea_investment_broker_trader_matches_zero_padded_order_ids() -> None:
     assert json.loads(amend_request.body.decode("utf-8"))["ORGN_ODNO"] == "12093"
 
 
-def test_korea_investment_broker_trader_uses_submission_cache_for_immediate_amend(
-) -> None:
+def test_korea_investment_broker_trader_uses_submission_cache_for_immediate_amend() -> (
+    None
+):
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
@@ -718,7 +776,9 @@ def test_korea_investment_broker_trader_uses_submission_cache_for_immediate_amen
             side=OrderSide.BUY,
             quantity=1,
             limit_price=Decimal("92900"),
-            requested_at=datetime(2026, 4, 11, 10, 30, 21, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 30, 21, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
     amended = trader.amend_order(
@@ -726,7 +786,9 @@ def test_korea_investment_broker_trader_uses_submission_cache_for_immediate_amen
             request_id="amend-1",
             order_id=submitted.order_id,
             limit_price=Decimal("94600"),
-            requested_at=datetime(2026, 4, 11, 10, 30, 24, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 30, 24, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
 
@@ -752,8 +814,9 @@ def test_korea_investment_broker_trader_uses_submission_cache_for_immediate_amen
     }
 
 
-def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_when_history_is_empty(
-) -> None:
+def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_when_history_is_empty() -> (
+    None
+):
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
@@ -794,7 +857,10 @@ def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_wh
                     }
                 ),
             ],
-            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response(
                 {
                     "rt_cd": "0",
                     "output1": [],
@@ -820,7 +886,9 @@ def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_wh
             side=OrderSide.BUY,
             quantity=1,
             limit_price=Decimal("90000"),
-            requested_at=datetime(2026, 4, 11, 10, 45, 42, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 45, 42, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
     amended = trader.amend_order(
@@ -828,14 +896,18 @@ def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_wh
             request_id="amend-1",
             order_id=submitted.order_id,
             limit_price=Decimal("93900"),
-            requested_at=datetime(2026, 4, 11, 10, 45, 47, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 45, 47, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
     canceled = trader.cancel_order(
         OrderCancelRequest(
             request_id="cancel-1",
             order_id=amended.order_id,
-            requested_at=datetime(2026, 4, 11, 10, 45, 52, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 45, 52, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
 
@@ -854,8 +926,9 @@ def test_korea_investment_broker_trader_returns_empty_fills_from_cached_order_wh
     ]
 
 
-def test_korea_investment_broker_trader_treats_no_cancelable_quantity_as_filled(
-) -> None:
+def test_korea_investment_broker_trader_treats_no_cancelable_quantity_as_filled() -> (
+    None
+):
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
@@ -895,14 +968,18 @@ def test_korea_investment_broker_trader_treats_no_cancelable_quantity_as_filled(
             side=OrderSide.BUY,
             quantity=1,
             limit_price=Decimal("95000"),
-            requested_at=datetime(2026, 4, 11, 10, 49, 6, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 49, 6, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
     canceled = trader.cancel_order(
         OrderCancelRequest(
             request_id="cancel-1",
             order_id=submitted.order_id,
-            requested_at=datetime(2026, 4, 11, 10, 49, 39, tzinfo=ZoneInfo("Asia/Seoul")),
+            requested_at=datetime(
+                2026, 4, 11, 10, 49, 39, tzinfo=ZoneInfo("Asia/Seoul")
+            ),
         )
     )
 
@@ -919,14 +996,16 @@ def test_korea_investment_broker_trader_treats_no_cancelable_quantity_as_filled(
     )
 
 
-def test_korea_investment_broker_trader_uses_amendable_lookup_when_history_missing(
-) -> None:
+def test_korea_investment_broker_trader_uses_amendable_lookup_when_history_missing() -> (
+    None
+):
     transport = RecordingTransport(
         {
             ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
-            ("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"): json_response(
-                {"rt_cd": "0", "output1": []}
-            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response({"rt_cd": "0", "output1": []}),
             (
                 "GET",
                 "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
@@ -988,7 +1067,10 @@ def test_korea_investment_bar_source_loads_daily_bars() -> None:
             ("POST", "/oauth2/tokenP"): json_response(
                 {"access_token": "token-123"},
             ),
-            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"): json_response(
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            ): json_response(
                 {
                     "rt_cd": "0",
                     "output2": [
@@ -1064,7 +1146,10 @@ def test_korea_investment_bar_source_aggregates_intraday_bars_into_30m_bars() ->
             ("POST", "/oauth2/tokenP"): json_response(
                 {"access_token": "token-123"},
             ),
-            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"): [
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+            ): [
                 json_response(
                     {
                         "rt_cd": "0",
@@ -1136,12 +1221,12 @@ def test_korea_investment_bar_source_aggregates_intraday_bars_into_30m_bars() ->
         "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
         "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
     ]
-    assert parse_qs(urlsplit(transport.requests[1].url).query)[
-        "FID_INPUT_HOUR_1"
-    ] == ["120000"]
-    assert parse_qs(urlsplit(transport.requests[2].url).query)[
-        "FID_INPUT_HOUR_1"
-    ] == ["100000"]
+    assert parse_qs(urlsplit(transport.requests[1].url).query)["FID_INPUT_HOUR_1"] == [
+        "120000"
+    ]
+    assert parse_qs(urlsplit(transport.requests[2].url).query)["FID_INPUT_HOUR_1"] == [
+        "100000"
+    ]
 
 
 def test_korea_investment_bar_source_keeps_market_close_bar_for_30m() -> None:
@@ -1150,7 +1235,10 @@ def test_korea_investment_bar_source_keeps_market_close_bar_for_30m() -> None:
             ("POST", "/oauth2/tokenP"): json_response(
                 {"access_token": "token-123"},
             ),
-            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"): json_response(
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+            ): json_response(
                 {
                     "rt_cd": "0",
                     "output2": _intraday_rows(
@@ -1335,11 +1423,14 @@ def test_resolve_min_request_interval_seconds_uses_environment_default(
     environment: BrokerEnvironment,
     expected: float,
 ) -> None:
-    assert _resolve_min_request_interval_seconds(
-        settings=_make_settings(environment),
-        transport=None,
-        explicit_seconds=None,
-    ) == expected
+    assert (
+        _resolve_min_request_interval_seconds(
+            settings=_make_settings(environment),
+            transport=None,
+            explicit_seconds=None,
+        )
+        == expected
+    )
 
 
 def _make_settings(environment: BrokerEnvironment = "paper") -> BrokerSettings:

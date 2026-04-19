@@ -234,8 +234,9 @@ def test_market_close_runtime_safe_stop_cleanup_records_runner_exception(
         and "safe_stop_reason=runner_exception" in (item.detail or "")
         for item in inspection_report.items
     )
-    assert "safe stop 원인 확인: reason=runner_exception detail=scheduler loop crashed" in (
-        result.next_day_preparation_path.read_text(encoding="utf-8")
+    assert (
+        "safe stop 원인 확인: reason=runner_exception detail=scheduler loop crashed"
+        in (result.next_day_preparation_path.read_text(encoding="utf-8"))
     )
     assert len(notifier.notifications) == 1
     assert "[FAILED]" in notifier.notifications[0].subject

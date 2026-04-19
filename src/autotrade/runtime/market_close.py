@@ -598,8 +598,7 @@ def _build_failure_inspection_report(
             label="당일 주문 내역 저장",
             status=InspectionStatus.FAILED,
             detail=(
-                error
-                + (f" {safe_stop_note}" if safe_stop_note is not None else "")
+                error + (f" {safe_stop_note}" if safe_stop_note is not None else "")
             ),
         ),
         (InspectionWindow.POST_MARKET, "체결 내역 저장"): DailyInspectionItem(
@@ -607,8 +606,7 @@ def _build_failure_inspection_report(
             label="체결 내역 저장",
             status=InspectionStatus.FAILED,
             detail=(
-                error
-                + (f" {safe_stop_note}" if safe_stop_note is not None else "")
+                error + (f" {safe_stop_note}" if safe_stop_note is not None else "")
             ),
         ),
         (InspectionWindow.POST_MARKET, "손익 요약 리포트 생성"): DailyInspectionItem(
@@ -622,8 +620,7 @@ def _build_failure_inspection_report(
             label="오류 로그 점검",
             status=InspectionStatus.FAILED,
             detail=(
-                error
-                + (f" {safe_stop_note}" if safe_stop_note is not None else "")
+                error + (f" {safe_stop_note}" if safe_stop_note is not None else "")
             ),
         ),
         (

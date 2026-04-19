@@ -18,6 +18,8 @@
 - 공식 CLI는 `src/autotrade/cli.py`에 있습니다. `src` 레이아웃 체크아웃에서 패키지를 따로 설치하지 않았다면 `PYTHONPATH=src python -m autotrade.cli ...`로 실행하고, 저장소 로컬 실행 호환 경로로 `python tools/operations.py ...`도 계속 사용할 수 있습니다.
 - 공식 CLI는 기본적으로 저장소 루트의 `.env`를 읽고, 템플릿은 `docs/autotrade.env.example`에 있습니다.
 - 공식 CLI의 기본 입력 경로는 `AUTOTRADE_LOG_DIR/bars`이고, 기본 산출물은 `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`, `AUTOTRADE_LOG_DIR/scheduler_state.json`입니다.
+- 공식 CLI 종료 코드는 `0=성공`, `1=운영 실패 또는 safe stop`, `2=설정/입력 오류`로 통일합니다.
+- `execution_state.json`, `scheduler_state.json`, `intraday_risk_state.json`은 임시 파일 + replace 방식으로 저장하며, 손상된 파일을 읽으면 `*.corrupt-*`로 백업한 뒤 빈 상태로 초기화합니다.
 - 일일 점검 체크리스트는 `python tools/daily_inspection.py`로 생성하고, 주간 리뷰 템플릿은 `python tools/weekly_review.py`로 생성합니다.
 - 위 스크립트는 `AUTOTRADE_LOG_DIR` 아래에 텍스트 산출물을 남기며, 실제 운영 실행기나 외부 알림 채널은 상위 orchestration에서 연결합니다.
 

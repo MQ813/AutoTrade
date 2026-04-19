@@ -105,7 +105,9 @@ class CompositeNotifier:
                 successful_deliveries += 1
             except Exception as error:  # pragma: no cover - defensive aggregation
                 failures.append(error)
-                logger.exception("알림 전송에 실패했습니다: notifier=%s", type(notifier).__name__)
+                logger.exception(
+                    "알림 전송에 실패했습니다: notifier=%s", type(notifier).__name__
+                )
         if successful_deliveries == 0 and failures:
             raise NotificationDeliveryError(
                 "; ".join(str(error) for error in failures),
@@ -207,10 +209,7 @@ def _format_telegram_messages(
     )
     available_body_length = max(
         1,
-        _TELEGRAM_MAX_TEXT_LENGTH
-        - len(header)
-        - _TELEGRAM_PART_SUFFIX_BUDGET
-        - 2,
+        _TELEGRAM_MAX_TEXT_LENGTH - len(header) - _TELEGRAM_PART_SUFFIX_BUDGET - 2,
     )
     chunks = _split_text(body, max_length=available_body_length)
     total_chunks = len(chunks)
@@ -235,7 +234,9 @@ def _split_text(text: str, *, max_length: int) -> tuple[str, ...]:
     for line in text.splitlines():
         line_chunks = _split_long_line(line, max_length=max_length)
         for line_chunk in line_chunks:
-            additional_length = len(line_chunk) if not current_lines else len(line_chunk) + 1
+            additional_length = (
+                len(line_chunk) if not current_lines else len(line_chunk) + 1
+            )
             if current_lines and current_length + additional_length > max_length:
                 chunks.append("\n".join(current_lines))
                 current_lines = [line_chunk]
@@ -252,8 +253,7 @@ def _split_long_line(line: str, *, max_length: int) -> tuple[str, ...]:
     if len(line) <= max_length:
         return (line,)
     return tuple(
-        line[index : index + max_length]
-        for index in range(0, len(line), max_length)
+        line[index : index + max_length] for index in range(0, len(line), max_length)
     )
 
 
@@ -275,7 +275,11 @@ def _retry_delay_seconds(
 ) -> float | None:
     if response.status == 429:
         retry_after = _extract_retry_after_seconds(response=response, payload=payload)
-        return retry_after if retry_after is not None else _network_retry_delay_seconds(attempt)
+        return (
+            retry_after
+            if retry_after is not None
+            else _network_retry_delay_seconds(attempt)
+        )
     if 500 <= response.status < 600:
         return _network_retry_delay_seconds(attempt)
     return None

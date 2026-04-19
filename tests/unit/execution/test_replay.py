@@ -44,7 +44,9 @@ def test_replay_session_replays_historical_bars_across_market_phases(tmp_path) -
     assert log_path.exists()
 
 
-def test_replay_session_resumes_from_snapshot_without_replaying_completed_work() -> None:
+def test_replay_session_resumes_from_snapshot_without_replaying_completed_work() -> (
+    None
+):
     config = SchedulerConfig(intraday_interval=timedelta(hours=6))
     full_session = ReplaySession(PaperBroker(Decimal("1000")), scheduler_config=config)
     full_jobs, _ = _build_jobs(full_session.broker)
@@ -77,6 +79,34 @@ def test_replay_log_can_restore_session_state() -> None:
     restored = restore_replay_session_from_log(session.log_entries)
 
     assert restored.snapshot() == session.snapshot()
+
+
+def test_replay_session_does_not_fill_restored_order_from_replayed_older_bar() -> None:
+    session = ReplaySession(PaperBroker(Decimal("1000")))
+    first_bar = _bar("2026-04-13T09:00:00+09:00", close="100", low="99")
+    later_bar = _bar("2026-04-13T10:00:00+09:00", close="99", low="99")
+    session.advance(first_bar, ())
+    engine = OrderExecutionEngine(session.broker)
+    order = engine.submit_order(
+        OrderRequest(
+            request_id="delayed-buy",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=5,
+            limit_price=Decimal("100"),
+            requested_at=_dt("2026-04-13T09:30:00+09:00"),
+        )
+    )
+
+    restored = ReplaySession.from_snapshot(session.snapshot())
+    restored.advance(first_bar, ())
+
+    assert restored.broker.get_fills(order.order.order_id) == ()
+
+    restored.advance(later_bar, ())
+
+    fills = restored.broker.get_fills(order.order.order_id)
+    assert fills[0].filled_at == later_bar.timestamp
 
 
 def _build_jobs(

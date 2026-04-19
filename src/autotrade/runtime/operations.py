@@ -17,7 +17,6 @@ from autotrade.broker import KoreaInvestmentBarSource
 from autotrade.broker import KoreaInvestmentBrokerReader
 from autotrade.broker import KoreaInvestmentBrokerTrader
 from autotrade.broker import PaperBroker
-from autotrade.broker.korea_investment import KoreaInvestmentBrokerError
 from autotrade.config import AppSettings
 from autotrade.config import ConfigError
 from autotrade.config import TelegramSettings
@@ -59,6 +58,9 @@ ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ENV_FILE = ROOT / ".env"
 ENV_TEMPLATE_FILE = ROOT / "docs" / "autotrade.env.example"
 logger = logging.getLogger(__name__)
+EXIT_CODE_SUCCESS = 0
+EXIT_CODE_OPERATION_FAILED = 1
+EXIT_CODE_CONFIGURATION_ERROR = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,12 +81,17 @@ class OperationServices:
     broker_reader: BrokerReader
     broker_trader: BrokerTrader
     runtime: LiveCycleRuntime
+
+
+def _log_operation_failure(command_name: str, error: Exception) -> None:
+    logger.error("%s 실행에 실패했습니다: %s", command_name, error)
+
+
 def _handle_run_once(args: argparse.Namespace) -> int:
     logger.info("AutoTrade 운영 사이클 실행을 준비합니다.")
     settings = _load_runtime_settings(args.env_file)
     if settings is None:
-        return 2
-
+        return EXIT_CODE_CONFIGURATION_ERROR
     try:
         services = _build_operation_services(
             settings,
@@ -92,34 +99,30 @@ def _handle_run_once(args: argparse.Namespace) -> int:
             bar_root=args.bar_root,
             paper_cash_override=args.paper_cash,
         )
-    except KoreaInvestmentBrokerError as exc:
-        logger.error("KIS paper 예수금 조회에 실패했습니다: %s", exc)
-        return 2
-    generated_at = datetime.now(KST)
-    logger.info("운영 사이클을 실행합니다.")
-    try:
+        generated_at = datetime.now(KST)
+        logger.info("운영 사이클을 실행합니다.")
         result = _execute_live_cycle(
             services.runtime,
             settings=services.settings,
             bar_root=services.bar_root,
             generated_at=generated_at,
         )
-    except (KoreaInvestmentBrokerError, ValueError) as exc:
-        logger.error("바 데이터 수집에 실패했습니다: %s", exc)
-        return 2
+    except Exception as exc:
+        _log_operation_failure("run-once", exc)
+        return EXIT_CODE_OPERATION_FAILED
     logger.info("운영 사이클 실행이 끝났습니다.")
 
     print(result.render_korean_summary())
     print(f"알림 파일: {services.notification_log_path}")
     print(f"주문 상태 파일: {services.state_store.path}")
-    return 0
+    return EXIT_CODE_SUCCESS
 
 
 def _handle_run_continuous(args: argparse.Namespace) -> int:
     logger.info("AutoTrade 연속 운영 실행을 준비합니다.")
     settings = _load_runtime_settings(args.env_file)
     if settings is None:
-        return 2
+        return EXIT_CODE_CONFIGURATION_ERROR
 
     try:
         services = _build_operation_services(
@@ -128,45 +131,45 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
             bar_root=args.bar_root,
             paper_cash_override=args.paper_cash,
         )
-    except KoreaInvestmentBrokerError as exc:
-        logger.error("KIS paper 예수금 조회에 실패했습니다: %s", exc)
-        return 2
-    preparation_runtime = MarketOpenPreparationRuntime(
-        settings=settings,
-        strategy_kind=services.strategy_kind.value,
-        timeframe=services.runtime.timeframe,
-    )
-    market_close_runtime = MarketCloseRuntime(
-        settings=settings,
-        broker_reader=services.broker_reader,
-        notifier=services.notifier,
-        state_store=services.state_store,
-    )
-    runner = ScheduledRunner(
-        jobs=(
-            preparation_runtime.build_job(),
-            _build_scheduled_cycle_job(
-                services.runtime,
-                settings=settings,
-                bar_root=services.bar_root,
+        preparation_runtime = MarketOpenPreparationRuntime(
+            settings=settings,
+            strategy_kind=services.strategy_kind.value,
+            timeframe=services.runtime.timeframe,
+        )
+        market_close_runtime = MarketCloseRuntime(
+            settings=settings,
+            broker_reader=services.broker_reader,
+            notifier=services.notifier,
+            state_store=services.state_store,
+        )
+        runner = ScheduledRunner(
+            jobs=(
+                preparation_runtime.build_job(),
+                _build_scheduled_cycle_job(
+                    services.runtime,
+                    settings=settings,
+                    bar_root=services.bar_root,
+                ),
+                _build_market_close_job(
+                    market_close_runtime,
+                    notifier=services.notifier,
+                    telegram_settings=settings.telegram,
+                ),
             ),
-            _build_market_close_job(
+            state_store=services.scheduler_state_store,
+            notifier=services.notifier,
+            log_dir=settings.log_dir,
+            safe_stop_handler=_build_safe_stop_cleanup_handler(
                 market_close_runtime,
                 notifier=services.notifier,
                 telegram_settings=settings.telegram,
             ),
-        ),
-        state_store=services.scheduler_state_store,
-        notifier=services.notifier,
-        log_dir=settings.log_dir,
-        safe_stop_handler=_build_safe_stop_cleanup_handler(
-            market_close_runtime,
-            notifier=services.notifier,
-            telegram_settings=settings.telegram,
-        ),
-    )
-    logger.info("연속 운영 runner를 시작합니다.")
-    runner_result = runner.run_forever(max_iterations=args.max_iterations)
+        )
+        logger.info("연속 운영 runner를 시작합니다.")
+        runner_result = runner.run_forever(max_iterations=args.max_iterations)
+    except Exception as exc:
+        _log_operation_failure("run-continuous", exc)
+        return EXIT_CODE_OPERATION_FAILED
     logger.info(
         "연속 운영 runner가 종료되었습니다. 상태=%s",
         runner_result.status.value,
@@ -178,15 +181,15 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
     print(f"주문 상태 파일: {services.state_store.path}")
     print(f"scheduler 상태 파일: {services.scheduler_state_store.path}")
     if runner_result.status is RunnerStatus.SAFE_STOP:
-        return 1
-    return 0
+        return EXIT_CODE_OPERATION_FAILED
+    return EXIT_CODE_SUCCESS
 
 
 def _handle_market_open(args: argparse.Namespace) -> int:
     logger.info("장전 준비 실행을 준비합니다.")
     settings = _load_runtime_settings(args.env_file)
     if settings is None:
-        return 2
+        return EXIT_CODE_CONFIGURATION_ERROR
 
     strategy_kind = StrategyKind(args.strategy)
     runtime = MarketOpenPreparationRuntime(
@@ -199,34 +202,29 @@ def _handle_market_open(args: argparse.Namespace) -> int:
     print(f"스모크 리포트 파일: {result.smoke_report_path}")
     print(f"점검 리포트 파일: {result.inspection_report_path}")
     if not result.success:
-        return 1
-    return 0
+        return EXIT_CODE_OPERATION_FAILED
+    return EXIT_CODE_SUCCESS
 
 
 def _handle_market_close(args: argparse.Namespace) -> int:
     logger.info("장종료 정리 실행을 준비합니다.")
     settings = _load_runtime_settings(args.env_file)
     if settings is None:
-        return 2
-
+        return EXIT_CODE_CONFIGURATION_ERROR
     try:
         broker_reader, _ = _build_broker_clients(
             settings,
             paper_cash_override=args.paper_cash,
         )
-    except KoreaInvestmentBrokerError as exc:
-        logger.error("KIS paper 예수금 조회에 실패했습니다: %s", exc)
-        return 2
-    notifier = _build_notifier(settings)
-    state_store = FileExecutionStateStore(settings.log_dir / "execution_state.json")
-    runtime = MarketCloseRuntime(
-        settings=settings,
-        broker_reader=broker_reader,
-        notifier=notifier,
-        state_store=state_store,
-    )
-    generated_at = datetime.now(KST)
-    try:
+        notifier = _build_notifier(settings)
+        state_store = FileExecutionStateStore(settings.log_dir / "execution_state.json")
+        runtime = MarketCloseRuntime(
+            settings=settings,
+            broker_reader=broker_reader,
+            notifier=notifier,
+            state_store=state_store,
+        )
+        generated_at = datetime.now(KST)
         result, weekly_review = _run_market_close_flow(
             runtime,
             notifier=notifier,
@@ -235,8 +233,8 @@ def _handle_market_close(args: argparse.Namespace) -> int:
             triggered_at=generated_at,
         )
     except Exception as exc:
-        logger.error("장종료 정리 실행에 실패했습니다: %s", exc)
-        return 2
+        _log_operation_failure("market-close", exc)
+        return EXIT_CODE_OPERATION_FAILED
 
     print(result.render_summary())
     print(f"일일 실행 리포트 파일: {result.daily_run_report_path}")
@@ -244,35 +242,44 @@ def _handle_market_close(args: argparse.Namespace) -> int:
     print(f"다음 거래일 준비 파일: {result.next_day_preparation_path}")
     if weekly_review is not None:
         print(f"주간 리뷰 파일: {weekly_review.report_path}")
-    return 0
+    return EXIT_CODE_SUCCESS
 
 
 def _handle_weekly_review(args: argparse.Namespace) -> int:
     environment = _load_environment(args.env_file)
     if environment is None:
-        return 2
+        return EXIT_CODE_CONFIGURATION_ERROR
     raw_log_dir = environment.get("AUTOTRADE_LOG_DIR")
     if raw_log_dir is None or not raw_log_dir.strip():
         logger.error(
             "설정 로딩에 실패했습니다: Missing required setting AUTOTRADE_LOG_DIR"
         )
-        return 2
+        return EXIT_CODE_CONFIGURATION_ERROR
 
     generated_at = datetime.now(KST)
     log_dir = Path(raw_log_dir).expanduser()
-    weekly_review = _build_and_write_weekly_review(
-        log_dir=log_dir,
-        generated_at=generated_at,
-    )
-    telegram_settings = load_telegram_settings(environment)
-    if telegram_settings.enabled:
-        publish_weekly_review_alert(
-            _build_weekly_review_notifier(log_dir, telegram_settings),
-            weekly_review.report,
-            created_at=generated_at,
+    try:
+        telegram_settings = load_telegram_settings(environment)
+    except ConfigError as exc:
+        logger.error("설정 로딩에 실패했습니다: %s", exc)
+        return EXIT_CODE_CONFIGURATION_ERROR
+
+    try:
+        weekly_review = _build_and_write_weekly_review(
+            log_dir=log_dir,
+            generated_at=generated_at,
         )
+        if telegram_settings.enabled:
+            publish_weekly_review_alert(
+                _build_weekly_review_notifier(log_dir, telegram_settings),
+                weekly_review.report,
+                created_at=generated_at,
+            )
+    except Exception as exc:
+        _log_operation_failure("weekly-review", exc)
+        return EXIT_CODE_OPERATION_FAILED
     print(weekly_review.report_path)
-    return 0
+    return EXIT_CODE_SUCCESS
 
 
 def _configure_logging() -> None:

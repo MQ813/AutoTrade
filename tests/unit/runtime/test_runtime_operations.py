@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import date
 from datetime import datetime
 from decimal import Decimal
@@ -69,6 +70,118 @@ def test_resolve_environment_prefers_shell_values_over_env_file(tmp_path) -> Non
     assert resolved["AUTOTRADE_BROKER_ENV"] == "paper"
     assert resolved["AUTOTRADE_LOG_DIR"] == "./logs-from-shell"
     assert resolved["EXTRA"] == "1"
+
+
+def test_handle_run_once_returns_operational_exit_code_on_runtime_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_runtime_settings",
+        lambda env_file: _settings(tmp_path / "logs"),
+    )
+    monkeypatch.setattr(
+        operations,
+        "_build_operation_services",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    caplog.set_level("ERROR")
+
+    result = operations._handle_run_once(
+        argparse.Namespace(
+            env_file=tmp_path / ".env",
+            strategy=operations.StrategyKind.THIRTY_MINUTE_TREND.value,
+            bar_root=None,
+            paper_cash=None,
+        )
+    )
+
+    assert result == operations.EXIT_CODE_OPERATION_FAILED
+    assert "run-once 실행에 실패했습니다: boom" in caplog.text
+
+
+def test_handle_run_continuous_returns_operational_exit_code_on_runtime_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_runtime_settings",
+        lambda env_file: _settings(tmp_path / "logs"),
+    )
+    monkeypatch.setattr(
+        operations,
+        "_build_operation_services",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = operations._handle_run_continuous(
+        argparse.Namespace(
+            env_file=tmp_path / ".env",
+            strategy=operations.StrategyKind.THIRTY_MINUTE_TREND.value,
+            bar_root=None,
+            paper_cash=None,
+            max_iterations=None,
+        )
+    )
+
+    assert result == operations.EXIT_CODE_OPERATION_FAILED
+
+
+def test_handle_market_close_returns_operational_exit_code_on_runtime_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_runtime_settings",
+        lambda env_file: _settings(tmp_path / "logs"),
+    )
+    monkeypatch.setattr(
+        operations,
+        "_build_broker_clients",
+        lambda settings, paper_cash_override: (_ for _ in ()).throw(
+            RuntimeError("boom")
+        ),
+    )
+
+    result = operations._handle_market_close(
+        argparse.Namespace(
+            env_file=tmp_path / ".env",
+            paper_cash=None,
+        )
+    )
+
+    assert result == operations.EXIT_CODE_OPERATION_FAILED
+
+
+def test_handle_weekly_review_returns_operational_exit_code_on_runtime_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_environment",
+        lambda env_file: {"AUTOTRADE_LOG_DIR": str(tmp_path / "logs")},
+    )
+    monkeypatch.setattr(
+        operations,
+        "load_telegram_settings",
+        lambda env: TelegramSettings(enabled=False),
+    )
+    monkeypatch.setattr(
+        operations,
+        "_build_and_write_weekly_review",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = operations._handle_weekly_review(
+        argparse.Namespace(env_file=tmp_path / ".env")
+    )
+
+    assert result == operations.EXIT_CODE_OPERATION_FAILED
 
 
 def test_collect_strategy_bars_fetches_and_writes_csv(tmp_path, monkeypatch) -> None:
@@ -226,7 +339,9 @@ def test_collect_strategy_bars_skips_request_when_cache_already_covers_target(
             start: datetime | None = None,
             end: datetime | None = None,
         ) -> tuple[Bar, ...]:
-            raise AssertionError("network fetch should be skipped when cache is current")
+            raise AssertionError(
+                "network fetch should be skipped when cache is current"
+            )
 
     monkeypatch.setattr(operations, "KoreaInvestmentBarSource", FakeBarSource)
 
@@ -369,7 +484,9 @@ def test_build_safe_stop_cleanup_handler_uses_safe_stop_context(monkeypatch) -> 
             captured.append((timestamp, reason, detail))
             return FakeResult()
 
-    monkeypatch.setattr(operations, "_maybe_create_weekly_review", lambda **kwargs: None)
+    monkeypatch.setattr(
+        operations, "_maybe_create_weekly_review", lambda **kwargs: None
+    )
     handler = operations._build_safe_stop_cleanup_handler(
         FakeRuntime(),
         notifier=RecordingNotifier(),
@@ -427,6 +544,8 @@ def test_build_notifier_returns_composite_when_telegram_enabled(tmp_path) -> Non
     assert isinstance(notifier, operations.CompositeNotifier)
     assert isinstance(notifier.notifiers[0], operations.FileNotifier)
     assert isinstance(notifier.notifiers[1], operations.TelegramNotifier)
+
+
 def test_is_last_trading_day_of_week_handles_friday_holiday() -> None:
     calendar = operations.KrxRegularSessionCalendar(
         holiday_dates=frozenset({date(2026, 4, 10)})
@@ -445,7 +564,9 @@ def test_run_market_close_flow_skips_weekly_review_before_last_trading_day(
         settings=_settings(log_dir),
         broker_reader=operations.PaperBroker(initial_cash=Decimal("1000000")),
         notifier=RecordingNotifier(),
-        state_store=operations.FileExecutionStateStore(log_dir / "execution_state.json"),
+        state_store=operations.FileExecutionStateStore(
+            log_dir / "execution_state.json"
+        ),
         clock=lambda: generated_at,
     )
 
@@ -470,7 +591,9 @@ def test_run_market_close_flow_generates_weekly_review_on_last_trading_day(
         settings=_settings(log_dir),
         broker_reader=operations.PaperBroker(initial_cash=Decimal("1000000")),
         notifier=RecordingNotifier(),
-        state_store=operations.FileExecutionStateStore(log_dir / "execution_state.json"),
+        state_store=operations.FileExecutionStateStore(
+            log_dir / "execution_state.json"
+        ),
         clock=lambda: generated_at,
     )
 
@@ -497,7 +620,9 @@ def test_run_market_close_flow_generates_weekly_review_on_safe_stop_last_day(
         settings=_settings(log_dir),
         broker_reader=operations.PaperBroker(initial_cash=Decimal("1000000")),
         notifier=RecordingNotifier(),
-        state_store=operations.FileExecutionStateStore(log_dir / "execution_state.json"),
+        state_store=operations.FileExecutionStateStore(
+            log_dir / "execution_state.json"
+        ),
         clock=lambda: generated_at,
     )
 

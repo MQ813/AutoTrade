@@ -171,6 +171,74 @@ def test_sync_fills_merges_unique_fills_and_updates_order_status() -> None:
     assert len(filled.fills) == 2
 
 
+def test_sync_fills_materializes_increment_from_cumulative_fill_snapshots() -> None:
+    trader = ScriptedBrokerTrader(
+        submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))],
+        fill_outcomes=[
+            (
+                ExecutionFill(
+                    fill_id="order-1:cumulative",
+                    order_id="order-1",
+                    symbol="069500",
+                    quantity=2,
+                    price=Decimal("10050"),
+                    filled_at=_dt("2026-04-13T09:01:00+09:00"),
+                ),
+            ),
+            (
+                ExecutionFill(
+                    fill_id="order-1:cumulative",
+                    order_id="order-1",
+                    symbol="069500",
+                    quantity=5,
+                    price=Decimal("10040"),
+                    filled_at=_dt("2026-04-13T09:02:00+09:00"),
+                ),
+            ),
+            (
+                ExecutionFill(
+                    fill_id="order-1:cumulative",
+                    order_id="order-1",
+                    symbol="069500",
+                    quantity=5,
+                    price=Decimal("10040"),
+                    filled_at=_dt("2026-04-13T09:02:00+09:00"),
+                ),
+            ),
+        ],
+    )
+    engine = OrderExecutionEngine(trader)
+
+    engine.submit_order(_order_request())
+    first = engine.sync_fills("order-1")
+    second = engine.sync_fills("order-1")
+    repeated = engine.sync_fills("order-1")
+
+    assert first.order.status is OrderStatus.PARTIALLY_FILLED
+    assert first.order.filled_quantity == 2
+    assert first.fills == (
+        ExecutionFill(
+            fill_id="order-1:cumulative:2",
+            order_id="order-1",
+            symbol="069500",
+            quantity=2,
+            price=Decimal("10050"),
+            filled_at=_dt("2026-04-13T09:01:00+09:00"),
+        ),
+    )
+    assert second.order.status is OrderStatus.PARTIALLY_FILLED
+    assert second.order.filled_quantity == 5
+    assert second.fills[1] == ExecutionFill(
+        fill_id="order-1:cumulative:5",
+        order_id="order-1",
+        symbol="069500",
+        quantity=3,
+        price=Decimal("30100") / Decimal("3"),
+        filled_at=_dt("2026-04-13T09:02:00+09:00"),
+    )
+    assert repeated == second
+
+
 def test_cancel_order_rejects_filled_order() -> None:
     trader = ScriptedBrokerTrader(
         submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))],

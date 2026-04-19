@@ -27,6 +27,19 @@ def test_file_scheduler_state_store_persists_executed_runs_across_restart(
     assert restored == state
 
 
+def test_file_scheduler_state_store_recovers_from_corrupted_file(tmp_path) -> None:
+    path = tmp_path / "scheduler_state.json"
+    path.write_text("{not-json", encoding="utf-8")
+
+    restored = FileSchedulerStateStore(path).load()
+
+    assert restored == SchedulerState()
+    backups = tuple(tmp_path.glob("scheduler_state.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{not-json"
+    assert not path.exists()
+
+
 def test_scheduler_state_retain_from_discards_previous_trading_days() -> None:
     state = SchedulerState(
         executed_runs=frozenset(

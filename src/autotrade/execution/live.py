@@ -7,10 +7,14 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
+from json import JSONDecodeError
+import logging
 from pathlib import Path
 from typing import Protocol
 from typing import TypeVar
 
+from autotrade.common.persistence import move_corrupt_file
+from autotrade.common.persistence import write_text_atomically
 from autotrade.broker import BrokerTrader
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
@@ -27,6 +31,8 @@ _TERMINAL_ORDER_STATUSES = {
     OrderStatus.CANCELED,
     OrderStatus.REJECTED,
 }
+_CUMULATIVE_FILL_ID_SUFFIXES = (":cumulative", ":aggregate")
+logger = logging.getLogger(__name__)
 
 
 class ExecutionEngineError(RuntimeError):
@@ -185,29 +191,45 @@ class FileExecutionStateStore(InMemoryExecutionStateStore):
         return self._path
 
     def _load(self) -> None:
-        raw_payload = json.loads(self._path.read_text(encoding="utf-8"))
-        payload = _require_mapping_value(raw_payload, "serialized execution state")
-        self._requests = {
-            tracked.request.request_id: tracked
-            for tracked in (
-                _deserialize_tracked_request(item)
-                for item in _require_list(payload, "requests")
+        try:
+            raw_payload = json.loads(self._path.read_text(encoding="utf-8"))
+            payload = _require_mapping_value(raw_payload, "serialized execution state")
+            self._requests = {
+                tracked.request.request_id: tracked
+                for tracked in (
+                    _deserialize_tracked_request(item)
+                    for item in _require_list(payload, "requests")
+                )
+            }
+            self._snapshots = {
+                snapshot.order.order_id: snapshot
+                for snapshot in (
+                    _deserialize_snapshot(item)
+                    for item in _require_list(payload, "snapshots")
+                )
+            }
+            self._order_aliases = {
+                alias: canonical_order_id
+                for alias, canonical_order_id in _require_string_mapping(
+                    payload.get("order_aliases"),
+                    "order_aliases",
+                ).items()
+            }
+        except FileNotFoundError:
+            self._requests = {}
+            self._snapshots = {}
+            self._order_aliases = {}
+        except (JSONDecodeError, ValueError) as error:
+            self._requests = {}
+            self._snapshots = {}
+            self._order_aliases = {}
+            backup_path = move_corrupt_file(self._path)
+            logger.warning(
+                "손상된 주문 상태 파일을 백업하고 초기화합니다. path=%s backup=%s reason=%s",
+                self._path,
+                backup_path,
+                error,
             )
-        }
-        self._snapshots = {
-            snapshot.order.order_id: snapshot
-            for snapshot in (
-                _deserialize_snapshot(item)
-                for item in _require_list(payload, "snapshots")
-            )
-        }
-        self._order_aliases = {
-            alias: canonical_order_id
-            for alias, canonical_order_id in _require_string_mapping(
-                payload.get("order_aliases"),
-                "order_aliases",
-            ).items()
-        }
 
     def _persist(self) -> None:
         payload = {
@@ -223,10 +245,9 @@ class FileExecutionStateStore(InMemoryExecutionStateStore):
             ],
             "order_aliases": dict(sorted(self._order_aliases.items())),
         }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
+        write_text_atomically(
+            self._path,
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
         )
 
 
@@ -384,10 +405,73 @@ def _merge_fills(
 ) -> tuple[ExecutionFill, ...]:
     merged: dict[str, ExecutionFill] = {fill.fill_id: fill for fill in existing}
     for fill in incoming:
+        if _is_cumulative_fill(fill):
+            for materialized_fill in _materialize_cumulative_fill(
+                tuple(merged.values()),
+                fill,
+            ):
+                merged[materialized_fill.fill_id] = materialized_fill
+            continue
         merged[fill.fill_id] = fill
     return tuple(
         sorted(merged.values(), key=lambda fill: (fill.filled_at, fill.fill_id))
     )
+
+
+def _is_cumulative_fill(fill: ExecutionFill) -> bool:
+    return fill.fill_id.endswith(_CUMULATIVE_FILL_ID_SUFFIXES)
+
+
+def _materialize_cumulative_fill(
+    existing: tuple[ExecutionFill, ...],
+    cumulative_fill: ExecutionFill,
+) -> tuple[ExecutionFill, ...]:
+    existing_quantity = sum(fill.quantity for fill in existing)
+    if cumulative_fill.quantity <= existing_quantity:
+        return ()
+
+    delta_quantity = cumulative_fill.quantity - existing_quantity
+    fill_id = f"{cumulative_fill.fill_id}:{cumulative_fill.quantity}"
+    if fill_id in {fill.fill_id for fill in existing}:
+        return ()
+
+    return (
+        ExecutionFill(
+            fill_id=fill_id,
+            order_id=cumulative_fill.order_id,
+            symbol=cumulative_fill.symbol,
+            quantity=delta_quantity,
+            price=_resolve_incremental_fill_price(
+                existing,
+                cumulative_fill,
+                delta_quantity=delta_quantity,
+            ),
+            filled_at=cumulative_fill.filled_at,
+        ),
+    )
+
+
+def _resolve_incremental_fill_price(
+    existing: tuple[ExecutionFill, ...],
+    cumulative_fill: ExecutionFill,
+    *,
+    delta_quantity: int,
+) -> Decimal:
+    existing_notional = sum(
+        (fill.price * Decimal(fill.quantity) for fill in existing),
+        start=Decimal("0"),
+    )
+    cumulative_notional = cumulative_fill.price * Decimal(cumulative_fill.quantity)
+    delta_notional = cumulative_notional - existing_notional
+    if delta_notional <= 0:
+        return _normalize_fill_price(cumulative_fill.price)
+    return _normalize_fill_price(delta_notional / Decimal(delta_quantity))
+
+
+def _normalize_fill_price(price: Decimal) -> Decimal:
+    if price == price.to_integral_value():
+        return price.to_integral_value()
+    return price
 
 
 def _apply_fills_to_order(

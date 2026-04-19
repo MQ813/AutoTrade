@@ -195,6 +195,8 @@ class ExecutionOrder:
         _require_positive_decimal("limit_price", self.limit_price)
         _require_aware_datetime("created_at", self.created_at)
         _require_aware_datetime("updated_at", self.updated_at)
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at must not be earlier than created_at")
         _require_non_negative_int("filled_quantity", self.filled_quantity)
         if self.filled_quantity > self.quantity:
             raise ValueError("filled_quantity must not exceed quantity")

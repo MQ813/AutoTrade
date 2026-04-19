@@ -9,10 +9,13 @@ from datetime import date
 from datetime import datetime
 import logging
 from decimal import Decimal
+from json import JSONDecodeError
 from pathlib import Path
 
 from autotrade.broker import BrokerReader
 from autotrade.broker import BrokerTrader
+from autotrade.common.persistence import move_corrupt_file
+from autotrade.common.persistence import write_text_atomically
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
@@ -84,21 +87,31 @@ class _FileIntradayRiskStateStore:
     def load(self) -> _IntradayRiskState | None:
         if not self.path.exists():
             return None
-        raw_payload = json.loads(self.path.read_text(encoding="utf-8"))
-        payload = _require_mapping(raw_payload, "serialized intraday risk state")
-        return _IntradayRiskState(
-            trading_day=date.fromisoformat(
-                _require_text(payload.get("trading_day"), "trading_day")
-            ),
-            session_start_equity=_require_optional_decimal(
-                payload.get("session_start_equity"),
-                "session_start_equity",
-            ),
-            peak_equity=_require_optional_decimal(
-                payload.get("peak_equity"),
-                "peak_equity",
-            ),
-        )
+        try:
+            raw_payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = _require_mapping(raw_payload, "serialized intraday risk state")
+            return _IntradayRiskState(
+                trading_day=date.fromisoformat(
+                    _require_text(payload.get("trading_day"), "trading_day")
+                ),
+                session_start_equity=_require_optional_decimal(
+                    payload.get("session_start_equity"),
+                    "session_start_equity",
+                ),
+                peak_equity=_require_optional_decimal(
+                    payload.get("peak_equity"),
+                    "peak_equity",
+                ),
+            )
+        except (JSONDecodeError, ValueError) as error:
+            backup_path = move_corrupt_file(self.path)
+            logger.warning(
+                "손상된 intraday risk 상태 파일을 백업하고 초기화합니다. path=%s backup=%s reason=%s",
+                self.path,
+                backup_path,
+                error,
+            )
+            return None
 
     def save(self, state: _IntradayRiskState) -> None:
         payload = {
@@ -108,10 +121,9 @@ class _FileIntradayRiskStateStore:
             ),
             "peak_equity": _serialize_optional_decimal(state.peak_equity),
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        write_text_atomically(
+            self.path,
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
         )
 
 

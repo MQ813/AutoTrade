@@ -27,9 +27,7 @@ from autotrade.scheduler import ScheduledJob
 
 logger = logging.getLogger(__name__)
 
-_OPERATIONS_LOG_PATTERN = re.compile(
-    r"^operations_(?P<day>\d{8})_\d{6}_\d+\.log$"
-)
+_OPERATIONS_LOG_PATTERN = re.compile(r"^operations_(?P<day>\d{8})_\d{6}_\d+\.log$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +145,9 @@ class MarketOpenPreparationRuntime:
         )
 
         smoke_report = self.smoke_runner(self.settings, generated_at)
-        smoke_report_path = self.smoke_report_writer(self.settings.log_dir, smoke_report)
+        smoke_report_path = self.smoke_report_writer(
+            self.settings.log_dir, smoke_report
+        )
         previous_day_errors = _collect_previous_day_errors(
             self.settings.log_dir,
             trading_day=trading_day,

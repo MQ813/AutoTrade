@@ -21,6 +21,7 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Final
 from urllib.error import HTTPError
+from urllib.error import URLError
 from urllib.parse import parse_qsl
 from urllib.parse import urlencode
 from urllib.parse import urlsplit
@@ -28,6 +29,7 @@ from urllib.request import Request
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
+from autotrade.broker.exceptions import BrokerNormalizationError
 from autotrade.broker.normalization import normalize_holding
 from autotrade.broker.normalization import normalize_order_capacity
 from autotrade.broker.normalization import normalize_quote
@@ -71,7 +73,9 @@ KIS_INTRADAY_CHART_PATH: Final[str] = (
     "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
 )
 KIS_BALANCE_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-balance"
-KIS_ORDER_CAPACITY_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+KIS_ORDER_CAPACITY_PATH: Final[str] = (
+    "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+)
 KIS_ORDER_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/order-cash"
 KIS_ORDER_AMEND_CANCEL_PATH: Final[str] = (
     "/uapi/domestic-stock/v1/trading/order-rvsecncl"
@@ -79,7 +83,9 @@ KIS_ORDER_AMEND_CANCEL_PATH: Final[str] = (
 KIS_AMENDABLE_ORDER_PATH: Final[str] = (
     "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 )
-KIS_ORDER_HISTORY_PATH: Final[str] = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+KIS_ORDER_HISTORY_PATH: Final[str] = (
+    "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+)
 KIS_LIMIT_ORDER_DIVISION: Final[str] = "00"
 KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.1
 KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 0.5
@@ -87,6 +93,7 @@ KIS_ORDER_HISTORY_LOOKUP_DELAY_MULTIPLIERS: Final[tuple[int, ...]] = (1, 2, 3)
 KIS_DAILY_CHART_PAGE_SIZE: Final[int] = 100
 KIS_INTRADAY_CHART_PAGE_SIZE: Final[int] = 120
 KIS_INTRADAY_MAX_PAGE_COUNT: Final[int] = 64
+KIS_CUMULATIVE_FILL_ID_SUFFIX: Final[str] = ":cumulative"
 logger = logging.getLogger(__name__)
 
 
@@ -221,7 +228,16 @@ class _KoreaInvestmentApiClient:
             ),
         )
         self._wait_for_request_slot()
-        response = self._transport(request)
+        try:
+            response = self._transport(request)
+        except TimeoutError as error:
+            raise KoreaInvestmentBrokerError(
+                _format_transport_failure("request timed out", error)
+            ) from error
+        except URLError as error:
+            raise KoreaInvestmentBrokerError(
+                _format_transport_failure("network request failed", error.reason)
+            ) from error
         self._write_raw_http_log(request=request, response=response)
         if response.status >= 400:
             raise KoreaInvestmentBrokerError(
@@ -437,115 +453,126 @@ class KoreaInvestmentBrokerReader(_KoreaInvestmentApiClient, BrokerReader):
         )
 
     def get_quote(self, symbol: str) -> Quote:
-        payload = self._request_json(
-            "GET",
-            KIS_QUOTE_PATH,
-            params={
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": symbol,
-            },
-            tr_id=self._quote_tr_id,
-        )
-        output = _require_mapping(payload, "output")
-        normalized_payload = {
-            "symbol": symbol,
-            "price": output.get("stck_prpr"),
-            "as_of": _resolve_as_of(output, self._clock()),
-            "currency": "KRW",
-        }
-        return normalize_quote(normalized_payload)
+        try:
+            payload = self._request_json(
+                "GET",
+                KIS_QUOTE_PATH,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                },
+                tr_id=self._quote_tr_id,
+            )
+            output = _require_mapping(payload, "output")
+            normalized_payload = {
+                "symbol": symbol,
+                "price": output.get("stck_prpr"),
+                "as_of": _resolve_as_of(output, self._clock()),
+                "currency": "KRW",
+            }
+            return normalize_quote(normalized_payload)
+        except BrokerNormalizationError as error:
+            raise KoreaInvestmentBrokerError(str(error)) from error
 
     def get_holdings(self) -> tuple[Holding, ...]:
-        payload = self._request_json(
-            "GET",
-            KIS_BALANCE_PATH,
-            params={
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._account_product_code,
-                "AFHR_FLPR_YN": "N",
-                "OFL_YN": "",
-                "INQR_DVSN": "02",
-                "UNPR_DVSN": "01",
-                "FUND_STTL_ICLD_YN": "N",
-                "FNCG_AMT_AUTO_RDPT_YN": "N",
-                "PRCS_DVSN": "00",
-                "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": "",
-            },
-            tr_id=self._balance_tr_id,
-        )
-        rows = _require_sequence(payload, "output1")
-        holdings: list[Holding] = []
-        for row in rows:
-            if not isinstance(row, Mapping):
-                raise KoreaInvestmentBrokerError("output1 entries must be mappings")
-
-            quantity = _coerce_int(row.get("hldg_qty"), field_name="hldg_qty")
-            if quantity <= 0:
-                continue
-
-            holdings.append(
-                normalize_holding(
-                    {
-                        "symbol": _coerce_string(row.get("pdno"), field_name="pdno"),
-                        "quantity": quantity,
-                        "average_price": row.get("pchs_avg_pric"),
-                        "current_price": row.get("prpr"),
-                    },
-                ),
+        try:
+            payload = self._request_json(
+                "GET",
+                KIS_BALANCE_PATH,
+                params={
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._account_product_code,
+                    "AFHR_FLPR_YN": "N",
+                    "OFL_YN": "",
+                    "INQR_DVSN": "02",
+                    "UNPR_DVSN": "01",
+                    "FUND_STTL_ICLD_YN": "N",
+                    "FNCG_AMT_AUTO_RDPT_YN": "N",
+                    "PRCS_DVSN": "00",
+                    "CTX_AREA_FK100": "",
+                    "CTX_AREA_NK100": "",
+                },
+                tr_id=self._balance_tr_id,
             )
-        return tuple(sorted(holdings, key=lambda holding: holding.symbol))
+            rows = _require_sequence(payload, "output1")
+            holdings: list[Holding] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise KoreaInvestmentBrokerError("output1 entries must be mappings")
+
+                quantity = _coerce_int(row.get("hldg_qty"), field_name="hldg_qty")
+                if quantity <= 0:
+                    continue
+
+                holdings.append(
+                    normalize_holding(
+                        {
+                            "symbol": _coerce_string(
+                                row.get("pdno"), field_name="pdno"
+                            ),
+                            "quantity": quantity,
+                            "average_price": row.get("pchs_avg_pric"),
+                            "current_price": row.get("prpr"),
+                        },
+                    ),
+                )
+            return tuple(sorted(holdings, key=lambda holding: holding.symbol))
+        except BrokerNormalizationError as error:
+            raise KoreaInvestmentBrokerError(str(error)) from error
 
     def get_order_capacity(
         self,
         symbol: str,
         order_price: Decimal,
     ) -> OrderCapacity:
-        payload = self._request_json(
-            "GET",
-            KIS_ORDER_CAPACITY_PATH,
-            params={
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._account_product_code,
-                "PDNO": symbol,
-                "ORD_UNPR": str(order_price),
-                "ORD_DVSN": "01",
-                "CMA_EVLU_AMT_ICLD_YN": "N",
-                "OVRS_ICLD_YN": "N",
-            },
-            tr_id=self._order_capacity_tr_id,
-        )
-        output = _require_mapping(payload, "output")
-        cash_available_raw = output.get("ord_psbl_cash")
-        if cash_available_raw is None:
-            cash_available_raw = output.get("nrcvb_buy_amt")
-        if cash_available_raw is None:
-            cash_available_raw = output.get("cash_available")
-        cash_available = _coerce_decimal(
-            cash_available_raw,
-            field_name="ord_psbl_cash",
-        )
-        max_orderable_quantity_raw = output.get("nrcvb_buy_qty")
-        if max_orderable_quantity_raw is None:
-            max_orderable_quantity_raw = output.get("max_buy_qty")
-        if max_orderable_quantity_raw is None:
-            max_orderable_quantity_raw = output.get("max_orderable_quantity")
-        if max_orderable_quantity_raw is None:
-            max_orderable_quantity_raw = output.get("ord_psbl_qty")
-        max_orderable_quantity = _coerce_optional_int(max_orderable_quantity_raw)
-        if max_orderable_quantity is None:
-            max_orderable_quantity = (
-                0 if order_price <= 0 else int(cash_available // order_price)
+        try:
+            payload = self._request_json(
+                "GET",
+                KIS_ORDER_CAPACITY_PATH,
+                params={
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._account_product_code,
+                    "PDNO": symbol,
+                    "ORD_UNPR": str(order_price),
+                    "ORD_DVSN": "01",
+                    "CMA_EVLU_AMT_ICLD_YN": "N",
+                    "OVRS_ICLD_YN": "N",
+                },
+                tr_id=self._order_capacity_tr_id,
             )
+            output = _require_mapping(payload, "output")
+            cash_available_raw = output.get("ord_psbl_cash")
+            if cash_available_raw is None:
+                cash_available_raw = output.get("nrcvb_buy_amt")
+            if cash_available_raw is None:
+                cash_available_raw = output.get("cash_available")
+            cash_available = _coerce_decimal(
+                cash_available_raw,
+                field_name="ord_psbl_cash",
+            )
+            max_orderable_quantity_raw = output.get("nrcvb_buy_qty")
+            if max_orderable_quantity_raw is None:
+                max_orderable_quantity_raw = output.get("max_buy_qty")
+            if max_orderable_quantity_raw is None:
+                max_orderable_quantity_raw = output.get("max_orderable_quantity")
+            if max_orderable_quantity_raw is None:
+                max_orderable_quantity_raw = output.get("ord_psbl_qty")
+            max_orderable_quantity = _coerce_optional_int(max_orderable_quantity_raw)
+            if max_orderable_quantity is None:
+                max_orderable_quantity = (
+                    0 if order_price <= 0 else int(cash_available // order_price)
+                )
 
-        return normalize_order_capacity(
-            {
-                "symbol": symbol,
-                "order_price": order_price,
-                "max_orderable_quantity": max_orderable_quantity,
-                "cash_available": cash_available,
-            },
-        )
+            return normalize_order_capacity(
+                {
+                    "symbol": symbol,
+                    "order_price": order_price,
+                    "max_orderable_quantity": max_orderable_quantity,
+                    "cash_available": cash_available,
+                },
+            )
+        except BrokerNormalizationError as error:
+            raise KoreaInvestmentBrokerError(str(error)) from error
 
 
 class KoreaInvestmentBarSource(_KoreaInvestmentApiClient):
@@ -636,11 +663,7 @@ class KoreaInvestmentBarSource(_KoreaInvestmentApiClient):
         start: datetime | None,
         end: datetime,
     ) -> tuple[Bar, ...]:
-        start_date = (
-            end.date() - timedelta(days=180)
-            if start is None
-            else start.date()
-        )
+        start_date = end.date() - timedelta(days=180) if start is None else start.date()
         current_end = end.date()
         seen_timestamps: set[datetime] = set()
         collected: list[Bar] = []
@@ -694,11 +717,7 @@ class KoreaInvestmentBarSource(_KoreaInvestmentApiClient):
         end: datetime,
     ) -> tuple[Bar, ...]:
         cursor = _resolve_intraday_cursor(end)
-        start_boundary = (
-            cursor - timedelta(days=21)
-            if start is None
-            else start
-        )
+        start_boundary = cursor - timedelta(days=21) if start is None else start
         seen_timestamps: set[datetime] = set()
         collected: list[Bar] = []
 
@@ -746,9 +765,7 @@ class KoreaInvestmentBarSource(_KoreaInvestmentApiClient):
             cursor = oldest_timestamp
 
         collected.sort(key=lambda bar: bar.timestamp)
-        return tuple(
-            bar for bar in collected if bar.timestamp >= start_boundary
-        )
+        return tuple(bar for bar in collected if bar.timestamp >= start_boundary)
 
 
 class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
@@ -866,7 +883,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             require_hashkey=True,
         )
         output = _require_mapping(payload, "output")
-        amended_order_id = _optional_output_string(output.get("ODNO")) or request.order_id
+        amended_order_id = (
+            _optional_output_string(output.get("ODNO")) or request.order_id
+        )
         self._remember_management_order_record(
             {
                 "ord_dt": request.requested_at.astimezone(KST).strftime("%Y%m%d"),
@@ -874,7 +893,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                 "ord_orgno": _resolve_order_branch(current_record),
                 "odno": amended_order_id,
                 "orgn_odno": _normalize_order_identifier(request.order_id),
-                "sll_buy_dvsn_cd": "02" if current_order.side is OrderSide.BUY else "01",
+                "sll_buy_dvsn_cd": "02"
+                if current_order.side is OrderSide.BUY
+                else "01",
                 "sll_buy_dvsn_cd_name": (
                     "매수" if current_order.side is OrderSide.BUY else "매도"
                 ),
@@ -896,7 +917,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             quantity=next_quantity,
             limit_price=next_limit_price,
             status=OrderStatus.ACKNOWLEDGED,
-            created_at=current_order.created_at,
+            created_at=min(current_order.created_at, request.requested_at),
             updated_at=request.requested_at,
             filled_quantity=current_order.filled_quantity,
         )
@@ -938,13 +959,15 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                     quantity=current_order.quantity,
                     limit_price=current_order.limit_price,
                     status=OrderStatus.FILLED,
-                    created_at=current_order.created_at,
+                    created_at=min(current_order.created_at, request.requested_at),
                     updated_at=request.requested_at,
                     filled_quantity=current_order.quantity,
                 )
                 self._remember_management_order_record(
                     {
-                        "ord_dt": request.requested_at.astimezone(KST).strftime("%Y%m%d"),
+                        "ord_dt": request.requested_at.astimezone(KST).strftime(
+                            "%Y%m%d"
+                        ),
                         "ord_gno_brno": _resolve_order_branch(current_record),
                         "ord_orgno": _resolve_order_branch(current_record),
                         "odno": request.order_id,
@@ -958,7 +981,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                         "pdno": current_order.symbol,
                         "ord_qty": str(current_order.quantity),
                         "ord_unpr": _format_order_price(current_order.limit_price),
-                        "ord_tmd": request.requested_at.astimezone(KST).strftime("%H%M%S"),
+                        "ord_tmd": request.requested_at.astimezone(KST).strftime(
+                            "%H%M%S"
+                        ),
                         "tot_ccld_qty": str(current_order.quantity),
                         "avg_prvs": "",
                         "cncl_yn": "N",
@@ -979,7 +1004,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                 "ord_orgno": _resolve_order_branch(current_record),
                 "odno": canceled_order_id,
                 "orgn_odno": _normalize_order_identifier(request.order_id),
-                "sll_buy_dvsn_cd": "02" if current_order.side is OrderSide.BUY else "01",
+                "sll_buy_dvsn_cd": "02"
+                if current_order.side is OrderSide.BUY
+                else "01",
                 "sll_buy_dvsn_cd_name": (
                     "매수" if current_order.side is OrderSide.BUY else "매도"
                 ),
@@ -1001,15 +1028,19 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             quantity=current_order.quantity,
             limit_price=current_order.limit_price,
             status=OrderStatus.CANCELED,
-            created_at=current_order.created_at,
+            created_at=min(current_order.created_at, request.requested_at),
             updated_at=request.requested_at,
             filled_quantity=current_order.filled_quantity,
         )
 
     def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
-        record = self._find_order_record_for_fills(order_id, reference_time=self._clock())
+        record = self._find_order_record_for_fills(
+            order_id, reference_time=self._clock()
+        )
         if record is None:
-            raise KoreaInvestmentBrokerError(f"order history missing order_id={order_id}")
+            raise KoreaInvestmentBrokerError(
+                f"order history missing order_id={order_id}"
+            )
         filled_quantity = _coerce_optional_int(record.get("tot_ccld_qty")) or 0
         if filled_quantity <= 0:
             return ()
@@ -1019,12 +1050,12 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             average_price_raw = record.get("ord_unpr")
         return (
             ExecutionFill(
-                fill_id=f"{order_id}:aggregate",
+                fill_id=f"{order_id}{KIS_CUMULATIVE_FILL_ID_SUFFIX}",
                 order_id=order_id,
                 symbol=_coerce_string(record.get("pdno"), field_name="pdno"),
                 quantity=filled_quantity,
                 price=_coerce_decimal(average_price_raw, field_name="avg_prvs"),
-                filled_at=_parse_order_timestamp(record, fallback=self._clock()),
+                filled_at=_parse_fill_timestamp(record, fallback=self._clock()),
             ),
         )
 
@@ -1119,8 +1150,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         records = tuple(
             row
             for row in rows
-            if isinstance(row, Mapping)
-            and not _is_blank_value(row.get("odno"))
+            if isinstance(row, Mapping) and not _is_blank_value(row.get("odno"))
         )
         return tuple(
             sorted(
@@ -1194,7 +1224,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             order_id = _optional_output_string(record.get(field_name))
             if order_id is None:
                 continue
-            self._management_order_records[_normalize_order_identifier(order_id)] = record
+            self._management_order_records[_normalize_order_identifier(order_id)] = (
+                record
+            )
 
     def _find_order_record_for_fills(
         self,
@@ -1350,10 +1382,7 @@ def _sanitize_url_for_log(url: str) -> str:
 
 
 def _sanitize_headers_for_log(headers: Mapping[str, str]) -> dict[str, str]:
-    return {
-        key: _redact_log_value(key, value)
-        for key, value in headers.items()
-    }
+    return {key: _redact_log_value(key, value) for key, value in headers.items()}
 
 
 def _decode_body_for_log(body: bytes | None) -> object | None:
@@ -1374,10 +1403,7 @@ def _sanitize_json_value_for_log(value: object, key: str | None = None) -> objec
             for nested_key, nested_value in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [
-            _sanitize_json_value_for_log(item, key)
-            for item in value
-        ]
+        return [_sanitize_json_value_for_log(item, key) for item in value]
     if isinstance(value, str) and key is not None:
         return _redact_log_value(key, value)
     return value
@@ -1421,6 +1447,19 @@ def _parse_order_timestamp(
     except ValueError:
         return fallback
     return parsed.replace(tzinfo=KST)
+
+
+def _parse_fill_timestamp(
+    record: Mapping[str, object],
+    *,
+    fallback: datetime,
+) -> datetime:
+    notification_time = _optional_output_string(record.get("infm_tmd"))
+    if notification_time is not None:
+        fill_record = dict(record)
+        fill_record["ord_tmd"] = notification_time
+        return _parse_order_timestamp(fill_record, fallback=fallback)
+    return _parse_order_timestamp(record, fallback=fallback)
 
 
 def _resolve_order_side(record: Mapping[str, object]) -> OrderSide:
@@ -1467,7 +1506,9 @@ def _resolve_order_branch(record: Mapping[str, object]) -> str:
 
 
 def _resolve_order_division(record: Mapping[str, object]) -> str:
-    return _optional_output_string(record.get("ord_dvsn_cd")) or KIS_LIMIT_ORDER_DIVISION
+    return (
+        _optional_output_string(record.get("ord_dvsn_cd")) or KIS_LIMIT_ORDER_DIVISION
+    )
 
 
 def _record_to_execution_order(
@@ -1723,6 +1764,13 @@ def _format_http_error(
     if details is None:
         return f"HTTP {status} from {method} {url}"
     return f"HTTP {status} from {method} {url}: {details}"
+
+
+def _format_transport_failure(message: str, detail: object) -> str:
+    normalized_detail = str(detail).strip()
+    if not normalized_detail:
+        return message
+    return f"{message}: {normalized_detail}"
 
 
 def _format_http_error_body(body: bytes) -> str | None:

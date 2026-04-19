@@ -131,6 +131,41 @@ def test_live_cycle_runtime_filters_out_future_bars(tmp_path) -> None:
     assert result.symbol_results[0].status == "hold"
 
 
+def test_live_cycle_runtime_recovers_from_corrupted_intraday_risk_state(
+    tmp_path,
+) -> None:
+    bar_root = tmp_path / "bars"
+    log_dir = tmp_path / "logs"
+    CsvBarStore(root_dir=bar_root).store_bars(
+        _build_trend_bars("069500", Timeframe.MINUTE_30)
+    )
+    (log_dir / "intraday_risk_state.json").parent.mkdir(parents=True, exist_ok=True)
+    (log_dir / "intraday_risk_state.json").write_text("{not-json", encoding="utf-8")
+
+    broker = PaperBroker(initial_cash=Decimal("1000000"))
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=create_strategy(StrategyKind.THIRTY_MINUTE_TREND),
+        timeframe=strategy_timeframe_for(StrategyKind.THIRTY_MINUTE_TREND),
+        bar_source=CsvBarSource(bar_root),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=FileNotifier(log_dir / "notifications.jsonl"),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: datetime(2026, 4, 10, 15, 0, tzinfo=KST),
+    )
+
+    result = runtime.run()
+
+    assert result.symbol_results[0].bars_loaded > 0
+    backups = tuple(log_dir.glob("intraday_risk_state.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{not-json"
+    assert '"trading_day": "2026-04-10"' in (
+        log_dir / "intraday_risk_state.json"
+    ).read_text(encoding="utf-8")
+
+
 def test_live_cycle_runtime_executes_sell_signal_for_existing_position(
     tmp_path,
 ) -> None:
@@ -249,6 +284,115 @@ def test_live_cycle_runtime_syncs_pending_buy_without_duplicate_submit(
     )
     assert len(notifier.notifications) == 1
     assert notifier.notifications[0].subject == "AutoTrade fill 069500 [2@101]"
+
+
+def test_live_cycle_runtime_publishes_only_incremental_fill_alerts_for_cumulative_sync(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    first_bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="101")
+    second_bar = _bar("069500", "2026-04-10T10:30:00+09:00", close="102")
+    broker = ScriptedLiveBroker(
+        submit_outcomes=(
+            _execution_order(
+                order_id="order-1",
+                symbol="069500",
+                side=OrderSide.BUY,
+                status=OrderStatus.ACKNOWLEDGED,
+                requested_at=first_bar.timestamp,
+                quantity=5,
+                limit_price=first_bar.close,
+            ),
+        ),
+        fill_outcomes={
+            "order-1": [
+                (
+                    _fill(
+                        "order-1:cumulative",
+                        order_id="order-1",
+                        symbol="069500",
+                        quantity=2,
+                        price=Decimal("101"),
+                        filled_at=first_bar.timestamp,
+                    ),
+                ),
+                (
+                    _fill(
+                        "order-1:cumulative",
+                        order_id="order-1",
+                        symbol="069500",
+                        quantity=5,
+                        price=Decimal("101.6"),
+                        filled_at=second_bar.timestamp,
+                    ),
+                ),
+            ]
+        },
+    )
+    notifier = RecordingNotifier()
+    state_store = FileExecutionStateStore(log_dir / "execution_state.json")
+    seed_engine = OrderExecutionEngine(broker, state_store=state_store)
+    seed_engine.submit_order(
+        OrderRequest(
+            request_id="seed-buy",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=5,
+            limit_price=first_bar.close,
+            requested_at=first_bar.timestamp,
+        )
+    )
+
+    first_runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.HOLD),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (first_bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=state_store,
+        clock=lambda: first_bar.timestamp,
+    )
+    second_runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.HOLD),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (first_bar, second_bar)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=state_store,
+        clock=lambda: second_bar.timestamp,
+    )
+
+    first_result = first_runtime.run()
+    second_result = second_runtime.run()
+
+    assert first_result.symbol_results[0].fills == (
+        _fill(
+            "order-1:cumulative:2",
+            order_id="order-1",
+            symbol="069500",
+            quantity=2,
+            price=Decimal("101"),
+            filled_at=first_bar.timestamp,
+        ),
+    )
+    assert second_result.symbol_results[0].fills == (
+        _fill(
+            "order-1:cumulative:5",
+            order_id="order-1",
+            symbol="069500",
+            quantity=3,
+            price=Decimal("102"),
+            filled_at=second_bar.timestamp,
+        ),
+    )
+    assert [notification.subject for notification in notifier.notifications] == [
+        "AutoTrade fill 069500 [2@101]",
+        "AutoTrade fill 069500 [3@102]",
+    ]
 
 
 def test_live_cycle_runtime_cancels_open_buy_near_market_close_and_blocks_entry(

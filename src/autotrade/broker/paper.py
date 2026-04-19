@@ -106,11 +106,7 @@ class PaperBroker(BrokerReader, BrokerTrader):
             ),
             fills=tuple(
                 sorted(
-                    (
-                        fill
-                        for fills in self._fills.values()
-                        for fill in fills
-                    ),
+                    (fill for fills in self._fills.values() for fill in fills),
                     key=lambda fill: (fill.filled_at, fill.fill_id),
                 )
             ),
@@ -168,8 +164,7 @@ class PaperBroker(BrokerReader, BrokerTrader):
             (
                 order.limit_price * Decimal(order.quantity)
                 for order in self._orders.values()
-                if order.side is OrderSide.BUY
-                and order.status in _OPEN_ORDER_STATUSES
+                if order.side is OrderSide.BUY and order.status in _OPEN_ORDER_STATUSES
             ),
             start=ZERO,
         )
@@ -296,7 +291,9 @@ class PaperBroker(BrokerReader, BrokerTrader):
             ),
             start=0,
         )
-        available_quantity = self._positions.get(symbol, _PaperPosition(0, ZERO)).quantity
+        available_quantity = self._positions.get(
+            symbol, _PaperPosition(0, ZERO)
+        ).quantity
         if quantity > max(0, available_quantity - reserved_quantity):
             return OrderStatus.REJECTED
         return OrderStatus.ACKNOWLEDGED
@@ -321,6 +318,8 @@ class PaperBroker(BrokerReader, BrokerTrader):
     def _maybe_fill_order(self, order_id: str, bar: Bar) -> None:
         order = self._orders[order_id]
         if order.status not in _OPEN_ORDER_STATUSES:
+            return
+        if bar.timestamp < order.updated_at:
             return
         if not self._is_fillable(order, bar):
             return
@@ -393,9 +392,9 @@ class PaperBroker(BrokerReader, BrokerTrader):
             )
         else:
             total_quantity = position.quantity + quantity
-            updated_notional = (
-                position.average_price * Decimal(position.quantity)
-            ) + (execution_price * Decimal(quantity))
+            updated_notional = (position.average_price * Decimal(position.quantity)) + (
+                execution_price * Decimal(quantity)
+            )
             position.quantity = total_quantity
             position.average_price = updated_notional / Decimal(total_quantity)
         self._cash -= total_cost
