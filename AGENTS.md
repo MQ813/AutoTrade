@@ -106,6 +106,7 @@ After coding, review/tester must provide:
 - Never overwrite user data without an explicit backup path or dry-run mode.
 - For file transforms, prefer deterministic scripts over manual bulk edits.
 - For large JSON/YAML/generated artifacts, modify the generator, not the output.
+- Do not read .env file.
 
 ## Common pitfalls
 - Do not edit generated files directly.
