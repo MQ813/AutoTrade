@@ -105,7 +105,7 @@ def build_broker_clients(
     reader_cls: type[KoreaInvestmentBrokerReader] = KoreaInvestmentBrokerReader,
     trader_cls: type[KoreaInvestmentBrokerTrader] = KoreaInvestmentBrokerTrader,
 ) -> tuple[BrokerReader, BrokerTrader]:
-    if settings.broker.environment == "paper":
+    if _uses_simulated_paper_broker(settings):
         broker, paper_cash = build_paper_broker(
             settings,
             paper_cash_override=paper_cash_override,
@@ -122,10 +122,29 @@ def build_broker_clients(
             )
         return broker, broker
 
+    if settings.broker.environment == "paper":
+        if paper_cash_override is not None:
+            raise ValueError(
+                "paper_cash_override is only supported when "
+                "AUTOTRADE_PAPER_TRADING_MODE=simulate"
+            )
+        logger.info("KIS paper 브로커 연동 객체를 초기화합니다.")
+        return (
+            reader_cls(settings.broker),
+            trader_cls(settings.broker),
+        )
+
     logger.info("실브로커(KIS) 연동 객체를 초기화합니다.")
     return (
         reader_cls(settings.broker),
         trader_cls(settings.broker),
+    )
+
+
+def _uses_simulated_paper_broker(settings: AppSettings) -> bool:
+    return (
+        settings.broker.environment == "paper"
+        and settings.broker.paper_trading_mode == "simulate"
     )
 
 

@@ -11,12 +11,14 @@ from typing import cast
 from autotrade.config.models import AppSettings
 from autotrade.config.models import BrokerSettings
 from autotrade.config.models import BrokerEnvironment
+from autotrade.config.models import PaperTradingMode
 from autotrade.config.models import TelegramSettings
 from autotrade.risk import RiskSettings
 
 SYMBOL_CODE_PATTERN = re.compile(r"^\d{6}$")
 DEFAULT_BROKER_PROVIDER = "koreainvestment"
 DEFAULT_BROKER_ENVIRONMENT = "paper"
+DEFAULT_BROKER_PAPER_TRADING_MODE = "simulate"
 TARGET_SYMBOLS_ENV_KEY = "AUTOTRADE_TARGET_SYMBOLS"
 DEFAULT_RISK_MAX_POSITION_WEIGHT = "0.2"
 DEFAULT_RISK_MAX_CONCURRENT_HOLDINGS = "3"
@@ -47,6 +49,13 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
             default=DEFAULT_BROKER_ENVIRONMENT,
         ),
     )
+    paper_trading_mode = _parse_paper_trading_mode(
+        _read_optional_value(
+            environment,
+            "AUTOTRADE_PAPER_TRADING_MODE",
+            default=DEFAULT_BROKER_PAPER_TRADING_MODE,
+        ),
+    )
     api_key = _read_required_value(environment, "AUTOTRADE_BROKER_API_KEY")
     api_secret = _read_required_value(environment, "AUTOTRADE_BROKER_API_SECRET")
     account = _read_required_value(environment, "AUTOTRADE_BROKER_ACCOUNT")
@@ -62,6 +71,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
             api_secret=api_secret,
             account=account,
             environment=broker_environment,
+            paper_trading_mode=paper_trading_mode,
         ),
         target_symbols=target_symbols,
         log_dir=log_dir,
@@ -159,6 +169,15 @@ def _parse_broker_environment(raw_value: str) -> BrokerEnvironment:
             "AUTOTRADE_BROKER_ENV must be one of: paper, live",
         )
     return cast(BrokerEnvironment, normalized)
+
+
+def _parse_paper_trading_mode(raw_value: str) -> PaperTradingMode:
+    normalized = raw_value.strip().lower()
+    if normalized not in {"simulate", "broker"}:
+        raise ConfigError(
+            "AUTOTRADE_PAPER_TRADING_MODE must be one of: simulate, broker",
+        )
+    return cast(PaperTradingMode, normalized)
 
 
 def _parse_target_symbols(raw_value: str) -> tuple[str, ...]:

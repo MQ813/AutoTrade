@@ -96,8 +96,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Decimal,
         default=None,
         help=(
-            "AUTOTRADE_BROKER_ENV=paper 일 때 내부 PaperBroker 초기 현금을 "
-            "수동 지정합니다. 지정하지 않으면 KIS paper 주문가능현금을 사용합니다."
+            "AUTOTRADE_BROKER_ENV=paper 이고 "
+            "AUTOTRADE_PAPER_TRADING_MODE=simulate 일 때만 내부 PaperBroker "
+            "초기 현금을 수동 지정합니다. 지정하지 않으면 KIS paper 주문가능현금을 사용합니다."
         ),
     )
     market_close_parser.set_defaults(handler=operations._handle_market_close)
@@ -113,6 +114,91 @@ def _build_parser() -> argparse.ArgumentParser:
         help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
     )
     weekly_review_parser.set_defaults(handler=operations._handle_weekly_review)
+
+    weekly_recommendation_parser = subparsers.add_parser(
+        "weekly-recommendation",
+        help="주간 종목 후보 리포트를 생성합니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--universe-file",
+        type=Path,
+        required=True,
+        help="추천 대상 seed universe CSV 파일 경로입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--bar-root",
+        type=Path,
+        default=None,
+        help="일봉 CSV 바 데이터 루트 경로입니다. 기본값은 AUTOTRADE_LOG_DIR/bars 입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--candidate-count",
+        type=int,
+        default=20,
+        help="최종 후보 개수입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--minimum-history-days",
+        type=int,
+        default=121,
+        help="종목별 최소 일봉 히스토리 개수입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--minimum-average-trading-value",
+        type=Decimal,
+        default=Decimal("1000000000"),
+        help="최근 20일 평균 거래대금 최소값입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--max-candidates-per-sector",
+        type=int,
+        default=2,
+        help="섹터별 최대 후보 개수입니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--exclude-symbol",
+        action="append",
+        default=[],
+        help="추천에서 제외할 심볼입니다. 여러 번 지정할 수 있습니다.",
+    )
+    weekly_recommendation_parser.add_argument(
+        "--exclude-sector",
+        action="append",
+        default=[],
+        help="추천에서 제외할 섹터입니다. 여러 번 지정할 수 있습니다.",
+    )
+    weekly_recommendation_parser.set_defaults(
+        handler=operations._handle_weekly_recommendation
+    )
+
+    approve_symbols_parser = subparsers.add_parser(
+        "approve-symbols",
+        help="주간 후보 중 승인된 종목 목록을 기록합니다.",
+    )
+    approve_symbols_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
+    )
+    approve_symbols_parser.add_argument(
+        "--symbols",
+        required=True,
+        help="승인할 종목 코드 목록입니다. 예: 069500,005930,000660",
+    )
+    approve_symbols_parser.add_argument(
+        "--candidate-json",
+        type=Path,
+        default=None,
+        help="검증에 사용할 주간 후보 JSON 파일 경로입니다. 기본값은 최신 후보 리포트입니다.",
+    )
+    approve_symbols_parser.set_defaults(handler=operations._handle_approve_symbols)
 
     daily_inspection_parser = subparsers.add_parser(
         "daily-inspection",
@@ -153,8 +239,9 @@ def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
         type=Decimal,
         default=None,
         help=(
-            "AUTOTRADE_BROKER_ENV=paper 일 때 내부 PaperBroker 초기 현금을 "
-            "수동 지정합니다. 지정하지 않으면 KIS paper 주문가능현금을 사용합니다."
+            "AUTOTRADE_BROKER_ENV=paper 이고 "
+            "AUTOTRADE_PAPER_TRADING_MODE=simulate 일 때만 내부 PaperBroker "
+            "초기 현금을 수동 지정합니다. 지정하지 않으면 KIS paper 주문가능현금을 사용합니다."
         ),
     )
 

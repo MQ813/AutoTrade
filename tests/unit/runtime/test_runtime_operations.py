@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import autotrade.runtime.operations as operations
+import pytest
 from autotrade.common import OrderCapacity
 from autotrade.common import Quote
 from autotrade.config import AppSettings
@@ -179,6 +180,64 @@ def test_handle_weekly_review_returns_operational_exit_code_on_runtime_error(
 
     result = operations._handle_weekly_review(
         argparse.Namespace(env_file=tmp_path / ".env")
+    )
+
+    assert result == operations.EXIT_CODE_OPERATION_FAILED
+
+
+def test_handle_weekly_recommendation_returns_operational_exit_code_on_runtime_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_environment",
+        lambda env_file: {"AUTOTRADE_LOG_DIR": str(tmp_path / "logs")},
+    )
+    monkeypatch.setattr(
+        operations,
+        "_build_and_write_weekly_recommendation",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = operations._handle_weekly_recommendation(
+        argparse.Namespace(
+            env_file=tmp_path / ".env",
+            universe_file=tmp_path / "seed.csv",
+            bar_root=None,
+            candidate_count=20,
+            minimum_history_days=121,
+            minimum_average_trading_value=Decimal("1000000000"),
+            max_candidates_per_sector=2,
+            exclude_symbol=[],
+            exclude_sector=[],
+        )
+    )
+
+    assert result == operations.EXIT_CODE_OPERATION_FAILED
+
+
+def test_handle_approve_symbols_returns_operational_exit_code_on_runtime_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_environment",
+        lambda env_file: {"AUTOTRADE_LOG_DIR": str(tmp_path / "logs")},
+    )
+    monkeypatch.setattr(
+        operations,
+        "_load_candidate_report_for_approval",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = operations._handle_approve_symbols(
+        argparse.Namespace(
+            env_file=tmp_path / ".env",
+            symbols="069500,005930,000660",
+            candidate_json=None,
+        )
     )
 
     assert result == operations.EXIT_CODE_OPERATION_FAILED
@@ -443,6 +502,67 @@ def test_build_paper_broker_uses_kis_order_capacity_cash(
     ]
     assert initial_cash == Decimal("7654321")
     assert capacity.cash_available == Decimal("7654321")
+
+
+def test_build_broker_clients_uses_kis_clients_for_paper_broker_mode(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FakeReader:
+        def __init__(self, settings: BrokerSettings) -> None:
+            self.settings = settings
+
+    class FakeTrader:
+        def __init__(self, settings: BrokerSettings) -> None:
+            self.settings = settings
+
+    monkeypatch.setattr(operations, "KoreaInvestmentBrokerReader", FakeReader)
+    monkeypatch.setattr(operations, "KoreaInvestmentBrokerTrader", FakeTrader)
+    settings = AppSettings(
+        broker=BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+            paper_trading_mode="broker",
+        ),
+        target_symbols=("069500",),
+        log_dir=tmp_path / "logs",
+    )
+
+    reader, trader = operations._build_broker_clients(
+        settings,
+        paper_cash_override=None,
+    )
+
+    assert isinstance(reader, FakeReader)
+    assert isinstance(trader, FakeTrader)
+    assert reader.settings.paper_trading_mode == "broker"
+    assert trader.settings.paper_trading_mode == "broker"
+
+
+def test_build_broker_clients_rejects_paper_cash_for_paper_broker_mode(
+    tmp_path,
+) -> None:
+    settings = AppSettings(
+        broker=BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+            paper_trading_mode="broker",
+        ),
+        target_symbols=("069500",),
+        log_dir=tmp_path / "logs",
+    )
+
+    with pytest.raises(ValueError):
+        operations._build_broker_clients(
+            settings,
+            paper_cash_override=Decimal("5000000"),
+        )
 
 
 def test_build_paper_broker_uses_override_without_kis_lookup(

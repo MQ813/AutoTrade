@@ -8,6 +8,7 @@ from typing import Literal
 from autotrade.risk import RiskSettings
 
 BrokerEnvironment = Literal["paper", "live"]
+PaperTradingMode = Literal["simulate", "broker"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,7 @@ class BrokerSettings:
     api_secret: str
     account: str
     environment: BrokerEnvironment = "paper"
+    paper_trading_mode: PaperTradingMode = "simulate"
 
     def __post_init__(self) -> None:
         if not self.provider.strip():
@@ -29,6 +31,8 @@ class BrokerSettings:
             raise ValueError("account must not be blank")
         if self.environment not in {"paper", "live"}:
             raise ValueError("environment must be 'paper' or 'live'")
+        if self.paper_trading_mode not in {"simulate", "broker"}:
+            raise ValueError("paper_trading_mode must be 'simulate' or 'broker'")
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from collections.abc import Mapping
 from datetime import date
@@ -24,7 +25,16 @@ from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
 from autotrade.data import Timeframe
 from autotrade.data import validate_bar_series
+from autotrade.data.validation import normalize_symbols
 from autotrade.execution import FileExecutionStateStore
+from autotrade.recommendation import ApprovedSymbolsRecord
+from autotrade.recommendation import RecommendationArtifacts
+from autotrade.recommendation import RecommendationPolicy
+from autotrade.recommendation import RECOMMENDATION_DIR
+from autotrade.recommendation import build_recommendation_report
+from autotrade.recommendation import load_seed_universe_csv
+from autotrade.recommendation import write_approved_symbols_bundle
+from autotrade.recommendation import write_recommendation_bundle
 from autotrade.report import build_daily_inspection_report
 from autotrade.report import build_weekly_review_report
 from autotrade.report import CompositeNotifier
@@ -42,29 +52,67 @@ from autotrade.runtime.market_close import MarketCloseResult
 from autotrade.runtime.market_close import MarketCloseRuntime
 from autotrade.runtime.market_open import MarketOpenPreparationRuntime
 from autotrade.runtime.operation_environment import load_env_file as _load_env_file_impl
-from autotrade.runtime.operation_environment import load_environment as _load_environment_impl
-from autotrade.runtime.operation_environment import load_runtime_settings as _load_runtime_settings_impl
-from autotrade.runtime.operation_environment import resolve_environment as _resolve_environment_impl
+from autotrade.runtime.operation_environment import (
+    load_environment as _load_environment_impl,
+)
+from autotrade.runtime.operation_environment import (
+    load_runtime_settings as _load_runtime_settings_impl,
+)
+from autotrade.runtime.operation_environment import (
+    resolve_environment as _resolve_environment_impl,
+)
 from autotrade.runtime.operation_flows import WeeklyReviewExecution
-from autotrade.runtime.operation_flows import build_and_write_weekly_review as _build_and_write_weekly_review_impl
-from autotrade.runtime.operation_flows import build_market_close_job as _build_market_close_job_impl
-from autotrade.runtime.operation_flows import build_safe_stop_cleanup_handler as _build_safe_stop_cleanup_handler_impl
-from autotrade.runtime.operation_flows import build_scheduled_cycle_job as _build_scheduled_cycle_job_impl
-from autotrade.runtime.operation_flows import collect_strategy_bars as _collect_strategy_bars_impl
-from autotrade.runtime.operation_flows import collection_window_start as _collection_window_start_impl
-from autotrade.runtime.operation_flows import execute_live_cycle as _execute_live_cycle_impl
-from autotrade.runtime.operation_flows import is_last_trading_day_of_week as _is_last_trading_day_of_week_impl
-from autotrade.runtime.operation_flows import maybe_create_weekly_review as _maybe_create_weekly_review_impl
+from autotrade.runtime.operation_flows import (
+    build_and_write_weekly_review as _build_and_write_weekly_review_impl,
+)
+from autotrade.runtime.operation_flows import (
+    build_market_close_job as _build_market_close_job_impl,
+)
+from autotrade.runtime.operation_flows import (
+    build_safe_stop_cleanup_handler as _build_safe_stop_cleanup_handler_impl,
+)
+from autotrade.runtime.operation_flows import (
+    build_scheduled_cycle_job as _build_scheduled_cycle_job_impl,
+)
+from autotrade.runtime.operation_flows import (
+    collect_strategy_bars as _collect_strategy_bars_impl,
+)
+from autotrade.runtime.operation_flows import (
+    collection_window_start as _collection_window_start_impl,
+)
+from autotrade.runtime.operation_flows import (
+    execute_live_cycle as _execute_live_cycle_impl,
+)
+from autotrade.runtime.operation_flows import (
+    is_last_trading_day_of_week as _is_last_trading_day_of_week_impl,
+)
+from autotrade.runtime.operation_flows import (
+    maybe_create_weekly_review as _maybe_create_weekly_review_impl,
+)
 from autotrade.runtime.operation_flows import merge_bar_series as _merge_bar_series_impl
-from autotrade.runtime.operation_flows import render_market_close_summary as _render_market_close_summary_impl
-from autotrade.runtime.operation_flows import resolve_incremental_collection_start as _resolve_incremental_collection_start_impl
-from autotrade.runtime.operation_flows import run_market_close_flow as _run_market_close_flow_impl
+from autotrade.runtime.operation_flows import (
+    render_market_close_summary as _render_market_close_summary_impl,
+)
+from autotrade.runtime.operation_flows import (
+    resolve_incremental_collection_start as _resolve_incremental_collection_start_impl,
+)
+from autotrade.runtime.operation_flows import (
+    run_market_close_flow as _run_market_close_flow_impl,
+)
 from autotrade.runtime.operation_services import OperationServices
-from autotrade.runtime.operation_services import build_broker_clients as _build_broker_clients_impl
+from autotrade.runtime.operation_services import (
+    build_broker_clients as _build_broker_clients_impl,
+)
 from autotrade.runtime.operation_services import build_notifier as _build_notifier_impl
-from autotrade.runtime.operation_services import build_operation_services as _build_operation_services_impl
-from autotrade.runtime.operation_services import build_paper_broker as _build_paper_broker_impl
-from autotrade.runtime.operation_services import build_weekly_review_notifier as _build_weekly_review_notifier_impl
+from autotrade.runtime.operation_services import (
+    build_operation_services as _build_operation_services_impl,
+)
+from autotrade.runtime.operation_services import (
+    build_paper_broker as _build_paper_broker_impl,
+)
+from autotrade.runtime.operation_services import (
+    build_weekly_review_notifier as _build_weekly_review_notifier_impl,
+)
 from autotrade.runtime.runner import RunnerStatus
 from autotrade.runtime.runner import ScheduledRunner
 from autotrade.strategy import StrategyKind
@@ -244,15 +292,11 @@ def _handle_weekly_review(args: argparse.Namespace) -> int:
     environment = _load_environment(args.env_file)
     if environment is None:
         return EXIT_CODE_CONFIGURATION_ERROR
-    raw_log_dir = environment.get("AUTOTRADE_LOG_DIR")
-    if raw_log_dir is None or not raw_log_dir.strip():
-        logger.error(
-            "설정 로딩에 실패했습니다: Missing required setting AUTOTRADE_LOG_DIR"
-        )
+    log_dir = _require_log_dir(environment)
+    if log_dir is None:
         return EXIT_CODE_CONFIGURATION_ERROR
 
     generated_at = datetime.now(KST)
-    log_dir = Path(raw_log_dir).expanduser()
     try:
         telegram_settings = load_telegram_settings(environment)
     except ConfigError as exc:
@@ -277,15 +321,78 @@ def _handle_weekly_review(args: argparse.Namespace) -> int:
     return EXIT_CODE_SUCCESS
 
 
+def _handle_weekly_recommendation(args: argparse.Namespace) -> int:
+    environment = _load_environment(args.env_file)
+    if environment is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+    log_dir = _require_log_dir(environment)
+    if log_dir is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+
+    generated_at = datetime.now(KST)
+    resolved_bar_root = args.bar_root or (log_dir / "bars")
+    policy = RecommendationPolicy(
+        min_history_days=args.minimum_history_days,
+        min_average_traded_value=args.minimum_average_trading_value,
+        top_n=args.candidate_count,
+        max_per_sector=args.max_candidates_per_sector,
+        excluded_symbols=tuple(args.exclude_symbol),
+        excluded_sectors=tuple(args.exclude_sector),
+    )
+    try:
+        artifacts = _build_and_write_weekly_recommendation(
+            log_dir=log_dir,
+            universe_file=args.universe_file,
+            bar_root=resolved_bar_root,
+            generated_at=generated_at,
+            policy=policy,
+        )
+    except Exception as exc:
+        _log_operation_failure("weekly-recommendation", exc)
+        return EXIT_CODE_OPERATION_FAILED
+    print(artifacts.markdown_path)
+    print(artifacts.csv_path)
+    print(artifacts.json_path)
+    return EXIT_CODE_SUCCESS
+
+
+def _handle_approve_symbols(args: argparse.Namespace) -> int:
+    environment = _load_environment(args.env_file)
+    if environment is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+    log_dir = _require_log_dir(environment)
+    if log_dir is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+
+    generated_at = datetime.now(KST)
+    try:
+        candidate_report, candidate_report_path = _load_candidate_report_for_approval(
+            log_dir=log_dir,
+            candidate_json=args.candidate_json,
+        )
+        approved_symbols = tuple(
+            symbol.strip() for symbol in _strip_optional_quotes(args.symbols).split(",")
+        )
+        approved_record = _approve_symbols(
+            log_dir=log_dir,
+            approved_symbols=approved_symbols,
+            candidate_payload=candidate_report,
+            candidate_report_path=candidate_report_path,
+            created_at=generated_at,
+        )
+    except Exception as exc:
+        _log_operation_failure("approve-symbols", exc)
+        return EXIT_CODE_OPERATION_FAILED
+    print(approved_record.latest_path)
+    return EXIT_CODE_SUCCESS
+
+
 def _handle_daily_inspection(args: argparse.Namespace) -> int:
     environment = _load_environment(args.env_file)
     if environment is None:
         return EXIT_CODE_CONFIGURATION_ERROR
-    raw_log_dir = environment.get("AUTOTRADE_LOG_DIR")
-    if raw_log_dir is None or not raw_log_dir.strip():
-        logger.error(
-            "설정 로딩에 실패했습니다: Missing required setting AUTOTRADE_LOG_DIR"
-        )
+    log_dir = _require_log_dir(environment)
+    if log_dir is None:
         return EXIT_CODE_CONFIGURATION_ERROR
 
     generated_at = datetime.now(KST)
@@ -293,7 +400,7 @@ def _handle_daily_inspection(args: argparse.Namespace) -> int:
         generated_at.date(),
         generated_at=generated_at,
     )
-    report_path = write_daily_inspection_report(Path(raw_log_dir).expanduser(), report)
+    report_path = write_daily_inspection_report(log_dir, report)
     print(report_path)
     return EXIT_CODE_SUCCESS
 
@@ -391,7 +498,11 @@ def _load_env_file(path: Path) -> dict[str, str]:
 
 
 def _strip_optional_quotes(value: str) -> str:
-    return value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'} else value
+    return (
+        value[1:-1]
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}
+        else value
+    )
 
 
 def _collect_strategy_bars(
@@ -563,6 +674,80 @@ def _build_and_write_weekly_review(
     )
 
 
+def _build_and_write_weekly_recommendation(
+    *,
+    log_dir: Path,
+    universe_file: Path,
+    bar_root: Path,
+    generated_at: datetime,
+    policy: RecommendationPolicy,
+) -> RecommendationArtifacts:
+    universe = load_seed_universe_csv(universe_file)
+    bar_source = CsvBarSource(bar_root)
+    bars_by_symbol = {
+        member.symbol: bar_source.load_bars(
+            member.symbol,
+            Timeframe.DAY,
+            end=generated_at,
+        )
+        for member in universe
+    }
+    report = build_recommendation_report(
+        universe,
+        bars_by_symbol,
+        policy,
+        as_of=generated_at.date(),
+        generated_at=generated_at,
+    )
+    return write_recommendation_bundle(log_dir, report)
+
+
+def _load_candidate_report_for_approval(
+    *,
+    log_dir: Path,
+    candidate_json: Path | None,
+):
+    if candidate_json is not None:
+        return _load_candidate_payload(candidate_json), candidate_json
+    latest_path = log_dir / RECOMMENDATION_DIR / "weekly_candidates_latest.json"
+    payload = _load_candidate_payload(latest_path)
+    if payload is None:
+        raise ValueError("latest weekly recommendation report was not found")
+    return payload, latest_path
+
+
+def _approve_symbols(
+    *,
+    log_dir: Path,
+    approved_symbols: tuple[str, ...],
+    candidate_payload: dict[str, object],
+    candidate_report_path: Path,
+    created_at: datetime,
+):
+    selected = candidate_payload.get("selected")
+    if not isinstance(selected, list):
+        raise ValueError("candidate report payload must contain a selected list")
+    candidate_symbols = {_extract_candidate_symbol(candidate) for candidate in selected}
+    resolved_symbols = normalize_symbols(approved_symbols)
+    unknown_symbols = sorted(
+        symbol for symbol in resolved_symbols if symbol not in candidate_symbols
+    )
+    if unknown_symbols:
+        raise ValueError(
+            "approved symbols must exist in the candidate report: "
+            + ",".join(unknown_symbols)
+        )
+    return write_approved_symbols_bundle(
+        log_dir,
+        ApprovedSymbolsRecord(
+            as_of=created_at.date(),
+            approved_at=created_at,
+            symbols=resolved_symbols,
+            source_report=str(candidate_report_path),
+        ),
+    )
+
+
 def _is_last_trading_day_of_week(
     trading_day: date,
     calendar: KrxRegularSessionCalendar,
@@ -594,6 +779,34 @@ def _build_paper_broker(
     )
 
 
+def _require_log_dir(environment: Mapping[str, str]) -> Path | None:
+    raw_log_dir = environment.get("AUTOTRADE_LOG_DIR")
+    if raw_log_dir is None or not raw_log_dir.strip():
+        logger.error(
+            "설정 로딩에 실패했습니다: Missing required setting AUTOTRADE_LOG_DIR"
+        )
+        return None
+    return Path(raw_log_dir).expanduser()
+
+
+def _load_candidate_payload(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("candidate report payload must be an object")
+    return payload
+
+
+def _extract_candidate_symbol(payload: object) -> str:
+    if not isinstance(payload, dict):
+        raise ValueError("candidate entry must be an object")
+    symbol = payload.get("symbol")
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("candidate entry must include a symbol")
+    return symbol
+
+
 __all__ = [
     "DEFAULT_ENV_FILE",
     "ENV_TEMPLATE_FILE",
@@ -606,16 +819,19 @@ __all__ = [
     "_build_paper_broker",
     "_build_safe_stop_cleanup_handler",
     "_build_scheduled_cycle_job",
+    "_build_and_write_weekly_recommendation",
     "_build_weekly_review_notifier",
     "_collection_window_start",
     "_configure_logging",
     "_collect_strategy_bars",
     "_execute_live_cycle",
+    "_handle_approve_symbols",
     "_handle_daily_inspection",
     "_handle_market_close",
     "_handle_market_open",
     "_handle_run_continuous",
     "_handle_run_once",
+    "_handle_weekly_recommendation",
     "_handle_weekly_review",
     "_is_last_trading_day_of_week",
     "_load_env_file",

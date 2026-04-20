@@ -4,10 +4,12 @@
 
 - `scheduler`: 장 시작, 장중, 장마감 작업을 KRX 정규장 캘린더 기준으로 실행합니다.
 - `report`: 실행 결과를 운영 로그, 일일 리포트, 알림 메시지로 변환합니다.
+- `AUTOTRADE_BROKER_ENV=paper`에서는 기본적으로 내부 `PaperBroker`를 사용합니다. KIS 모의투자 계좌에 실제 주문을 보내려면 `AUTOTRADE_PAPER_TRADING_MODE=broker`를 함께 설정해야 합니다.
 
 ## 소액 실전 운영 기준
 
 - 실전 환경에서는 `AUTOTRADE_BROKER_ENV=live`와 함께 `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`을 명시해 자동매매가 사용할 최대 운영 자금을 제한합니다.
+- KIS 모의투자 실주문 테스트에서는 `AUTOTRADE_BROKER_ENV=paper`, `AUTOTRADE_PAPER_TRADING_MODE=broker` 조합을 사용합니다.
 - 주문/체결 알림은 `report` 모듈의 `build_order_alert`, `build_fill_alert`, `publish_order_alert`, `publish_fill_alert`로 생성합니다.
 - `AUTOTRADE_TELEGRAM_ENABLED=true`이면 공식 CLI인 `python -m autotrade.cli ...`가 파일 notifier와 Telegram notifier를 함께 연결해 주문/체결/일일 리포트를 발행합니다.
 - `python -m autotrade.cli weekly-review`는 기본적으로 저장소 루트의 `.env`를 읽고, 텔레그램이 켜져 있으면 주간 리뷰를 파일로 저장한 뒤 Telegram으로 발행합니다.
@@ -20,6 +22,7 @@
 - 공식 CLI의 기본 입력 경로는 `AUTOTRADE_LOG_DIR/bars`이고, 기본 산출물은 `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`, `AUTOTRADE_LOG_DIR/scheduler_state.json`입니다.
 - 공식 CLI 종료 코드는 `0=성공`, `1=운영 실패 또는 safe stop`, `2=설정/입력 오류`로 통일합니다.
 - `execution_state.json`, `scheduler_state.json`, `intraday_risk_state.json`은 임시 파일 + replace 방식으로 저장하며, 손상된 파일을 읽으면 `*.corrupt-*`로 백업한 뒤 빈 상태로 초기화합니다.
+- `--paper-cash`는 `AUTOTRADE_PAPER_TRADING_MODE=simulate`일 때만 의미가 있습니다.
 - 일일 점검 체크리스트는 `python tools/daily_inspection.py`로 생성하고, 주간 리뷰 템플릿은 `python tools/weekly_review.py`로 생성합니다.
 - 위 스크립트는 `AUTOTRADE_LOG_DIR` 아래에 텍스트 산출물을 남기며, 실제 운영 실행기나 외부 알림 채널은 상위 orchestration에서 연결합니다.
 
@@ -48,6 +51,7 @@
 
 ## 선택 설정
 
+- `AUTOTRADE_PAPER_TRADING_MODE`
 - `AUTOTRADE_TELEGRAM_ENABLED`
 - `AUTOTRADE_TELEGRAM_BOT_TOKEN`
 - `AUTOTRADE_TELEGRAM_CHAT_ID`

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import os
 from collections.abc import Mapping
@@ -8,6 +9,7 @@ from pathlib import Path
 from autotrade.config import AppSettings
 from autotrade.config import ConfigError
 from autotrade.config import load_settings
+from autotrade.recommendation import load_latest_approved_symbols
 
 
 def load_runtime_settings(
@@ -32,7 +34,7 @@ def load_runtime_settings(
             env_template_file,
         )
         return None
-    return settings
+    return apply_approved_symbols_override(settings, logger=logger)
 
 
 def load_environment(
@@ -113,3 +115,24 @@ def strip_optional_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def apply_approved_symbols_override(
+    settings: AppSettings,
+    *,
+    logger: logging.Logger,
+) -> AppSettings:
+    approved_symbols = load_latest_approved_symbols(settings.log_dir)
+    if approved_symbols is None:
+        return settings
+    if approved_symbols.symbols == settings.target_symbols:
+        logger.info(
+            "승인 종목 파일이 현재 대상 종목과 동일합니다. targets=%s",
+            ",".join(settings.target_symbols),
+        )
+        return settings
+    logger.info(
+        "승인 종목 파일을 적용합니다. targets=%s",
+        ",".join(approved_symbols.symbols),
+    )
+    return replace(settings, target_symbols=approved_symbols.symbols)

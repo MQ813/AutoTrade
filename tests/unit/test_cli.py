@@ -10,11 +10,13 @@ def test_build_parser_exposes_expected_subcommands() -> None:
     )
 
     assert set(subparsers_action.choices) == {
+        "approve-symbols",
         "daily-inspection",
         "run-once",
         "run-continuous",
         "market-open",
         "market-close",
+        "weekly-recommendation",
         "weekly-review",
     }
 

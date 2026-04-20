@@ -221,8 +221,12 @@ def build_market_close_job(
     *,
     notifier,
     telegram_settings: TelegramSettings,
-    run_market_close_flow: Callable[..., tuple[MarketCloseResult, WeeklyReviewExecution | None]],
-    render_market_close_summary: Callable[[MarketCloseResult, WeeklyReviewExecution | None], str],
+    run_market_close_flow: Callable[
+        ..., tuple[MarketCloseResult, WeeklyReviewExecution | None]
+    ],
+    render_market_close_summary: Callable[
+        [MarketCloseResult, WeeklyReviewExecution | None], str
+    ],
 ) -> ScheduledJob:
     base_job = runtime.build_job()
 
@@ -248,8 +252,12 @@ def build_safe_stop_cleanup_handler(
     *,
     notifier,
     telegram_settings: TelegramSettings,
-    run_market_close_flow: Callable[..., tuple[MarketCloseResult, WeeklyReviewExecution | None]],
-    render_market_close_summary: Callable[[MarketCloseResult, WeeklyReviewExecution | None], str],
+    run_market_close_flow: Callable[
+        ..., tuple[MarketCloseResult, WeeklyReviewExecution | None]
+    ],
+    render_market_close_summary: Callable[
+        [MarketCloseResult, WeeklyReviewExecution | None], str
+    ],
 ):
     def handler(context: SafeStopContext) -> str:
         result, weekly_review = run_market_close_flow(
