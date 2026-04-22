@@ -94,6 +94,7 @@ KIS_DAILY_CHART_PAGE_SIZE: Final[int] = 100
 KIS_INTRADAY_CHART_PAGE_SIZE: Final[int] = 120
 KIS_INTRADAY_MAX_PAGE_COUNT: Final[int] = 64
 KIS_CUMULATIVE_FILL_ID_SUFFIX: Final[str] = ":cumulative"
+KIS_TOKEN_EXPIRED_MSG_CODE: Final[str] = "EGW00123"
 logger = logging.getLogger(__name__)
 
 
@@ -212,46 +213,69 @@ class _KoreaInvestmentApiClient:
         require_hashkey: bool = False,
     ) -> Mapping[str, object]:
         method_name = method.upper()
-        request = HttpRequest(
-            method=method_name,
-            url=_build_url(self._base_url, path, params),
-            headers=self._build_headers(
-                method=method_name,
-                path=path,
-                tr_id=tr_id,
-                hashkey_body=body if require_hashkey else None,
-            ),
-            body=(
-                json.dumps(body, separators=(",", ":")).encode("utf-8")
-                if body is not None
-                else None
-            ),
+        allow_token_refresh_retry = path != KIS_TOKEN_PATH
+        max_attempts = 2 if allow_token_refresh_retry else 1
+        request_body = (
+            json.dumps(body, separators=(",", ":")).encode("utf-8")
+            if body is not None
+            else None
         )
-        self._wait_for_request_slot()
-        try:
-            response = self._transport(request)
-        except TimeoutError as error:
-            raise KoreaInvestmentBrokerError(
-                _format_transport_failure("request timed out", error)
-            ) from error
-        except URLError as error:
-            raise KoreaInvestmentBrokerError(
-                _format_transport_failure("network request failed", error.reason)
-            ) from error
-        self._write_raw_http_log(request=request, response=response)
-        if response.status >= 400:
-            raise KoreaInvestmentBrokerError(
-                _format_http_error(
-                    status=response.status,
-                    method=request.method,
-                    url=request.url,
-                    body=response.body,
-                )
-            )
 
-        payload = _decode_json(response.body)
-        _raise_for_api_error(payload)
-        return payload
+        for attempt_index in range(max_attempts):
+            request = HttpRequest(
+                method=method_name,
+                url=_build_url(self._base_url, path, params),
+                headers=self._build_headers(
+                    method=method_name,
+                    path=path,
+                    tr_id=tr_id,
+                    hashkey_body=body if require_hashkey else None,
+                ),
+                body=request_body,
+            )
+            self._wait_for_request_slot()
+            try:
+                response = self._transport(request)
+            except TimeoutError as error:
+                raise KoreaInvestmentBrokerError(
+                    _format_transport_failure("request timed out", error)
+                ) from error
+            except URLError as error:
+                raise KoreaInvestmentBrokerError(
+                    _format_transport_failure("network request failed", error.reason)
+                ) from error
+
+            self._write_raw_http_log(request=request, response=response)
+            payload = _try_decode_json(response.body)
+            if (
+                allow_token_refresh_retry
+                and attempt_index == 0
+                and _is_token_expired_payload(payload)
+            ):
+                logger.warning(
+                    "KIS access token expired during request, refreshing and retrying. method=%s path=%s",
+                    method_name,
+                    path,
+                )
+                self._invalidate_access_token()
+                continue
+
+            if response.status >= 400:
+                raise KoreaInvestmentBrokerError(
+                    _format_http_error(
+                        status=response.status,
+                        method=request.method,
+                        url=request.url,
+                        body=response.body,
+                    )
+                )
+
+            if payload is None:
+                raise KoreaInvestmentBrokerError("response body is not valid JSON")
+            _raise_for_api_error(payload)
+            return payload
+
+        raise AssertionError("request retry loop exhausted unexpectedly")
 
     def _write_raw_http_log(
         self,
@@ -308,9 +332,7 @@ class _KoreaInvestmentApiClient:
         if tr_id is not None:
             headers["tr_id"] = tr_id
         if path != KIS_TOKEN_PATH:
-            headers["authorization"] = (
-                f"Bearer {self._access_token or self._get_access_token()}"
-            )
+            headers["authorization"] = f"Bearer {self._get_access_token()}"
             headers["custtype"] = "P"
         if hashkey_body is not None:
             headers["hashkey"] = self._request_hashkey(hashkey_body)
@@ -371,6 +393,16 @@ class _KoreaInvestmentApiClient:
             self._access_token_expires_at,
             now=self._clock(),
         )
+
+    def _invalidate_access_token(self) -> None:
+        self._access_token = None
+        self._access_token_expires_at = None
+        try:
+            self._token_cache_path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError:
+            return
 
     def _load_access_token_from_cache(self) -> CachedAccessToken | None:
         try:
@@ -1793,6 +1825,16 @@ def _try_decode_json(raw_body: bytes) -> Mapping[str, object] | None:
     if not isinstance(decoded, Mapping):
         return None
     return decoded
+
+
+def _is_token_expired_payload(payload: Mapping[str, object] | None) -> bool:
+    if payload is None:
+        return False
+    msg_cd = payload.get("msg_cd")
+    return (
+        isinstance(msg_cd, str)
+        and msg_cd.strip() == KIS_TOKEN_EXPIRED_MSG_CODE
+    )
 
 
 def _format_kis_payload_error(payload: Mapping[str, object]) -> str:

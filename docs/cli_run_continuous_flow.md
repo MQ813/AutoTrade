@@ -67,15 +67,18 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A[MARKET_OPEN slot 도달] --> B[MarketOpenPreparationRuntime.run]
-    B --> C[read-only broker smoke 실행]
-    C --> D[전일 operations 로그 오류 요약]
-    D --> E[장전 점검 항목 구성]
-    E --> F[일일 점검 리포트 저장]
-    F --> G{장전 준비 성공?}
-    G -->|예| H[다음 INTRADAY slot 대기]
-    G -->|아니오| I[job 실패로 기록]
-    I --> J[runner safe stop 경로 진입]
+    A[08:00 MARKET_OPEN slot 도달] --> B[MarketOpenPreparationRuntime.run]
+    B --> C[전략 입력 바 데이터 확인 및 최신화]
+    C --> D[read-only broker smoke 실행]
+    D --> E[전일 operations 로그 오류 요약]
+    E --> F[현재가 기준 전략 프리뷰 생성]
+    F --> G[장전 점검 항목 구성]
+    G --> H[일일 점검 리포트 저장]
+    H --> I[장전 요약 알림 발행<br/>파일 + Telegram]
+    I --> J{장전 준비 성공?}
+    J -->|예| K[다음 INTRADAY slot 대기]
+    J -->|아니오| L[job 실패로 기록]
+    L --> M[runner safe stop 경로 진입]
 ```
 
 ## 5. 장중 매매 상세

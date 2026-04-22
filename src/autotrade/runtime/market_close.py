@@ -207,29 +207,37 @@ class MarketCloseRuntime:
         trading_day = generated_at.astimezone(KST).date()
         job_results = load_job_run_results(self.settings.log_dir, trading_day)
         snapshots = self.state_store.list_snapshots()
-        holdings = self.broker_reader.get_holdings()
+        holdings_error: str | None = None
+        try:
+            holdings = self.broker_reader.get_holdings()
+        except Exception as exc:
+            holdings = ()
+            holdings_error = str(exc)
+            logger.exception("장 종료 정리용 잔고 조회에 실패했습니다.")
         daily_snapshots = _daily_order_snapshots(snapshots, trading_day=trading_day)
         daily_fills = _daily_fills(snapshots, trading_day=trading_day)
         open_orders = _open_order_snapshots(snapshots)
         rejected_orders = _rejected_order_snapshots(daily_snapshots)
 
         finished_at = self.clock()
+        detail = _market_close_detail(
+            order_snapshots=len(daily_snapshots),
+            daily_fills=len(daily_fills),
+            open_orders=len(open_orders),
+            rejected_orders=len(rejected_orders),
+            holdings=len(holdings),
+            safe_stop_reason=safe_stop_reason,
+            safe_stop_detail=safe_stop_detail,
+        )
         current_job_result = JobRunResult(
             job_name="market_close_cleanup",
             phase=MarketSessionPhase.MARKET_CLOSE,
             scheduled_at=generated_at,
             started_at=started_at,
             finished_at=finished_at,
-            success=True,
-            detail=_market_close_detail(
-                order_snapshots=len(daily_snapshots),
-                daily_fills=len(daily_fills),
-                open_orders=len(open_orders),
-                rejected_orders=len(rejected_orders),
-                holdings=len(holdings),
-                safe_stop_reason=safe_stop_reason,
-                safe_stop_detail=safe_stop_detail,
-            ),
+            success=holdings_error is None,
+            detail=detail,
+            error=holdings_error,
         )
         merged_job_results = _merge_job_results(
             job_results,

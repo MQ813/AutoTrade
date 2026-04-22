@@ -7,8 +7,6 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
 from autotrade.broker import PaperBroker
 from autotrade.common import OrderRequest
 from autotrade.common import OrderSide
@@ -143,7 +141,9 @@ def test_market_close_runtime_writes_daily_outputs_and_updates_inspection(
     assert "[OK]" in notifier.notifications[0].subject
 
 
-def test_market_close_runtime_writes_failure_report_before_raising(tmp_path) -> None:
+def test_market_close_runtime_degrades_to_failed_report_when_holdings_lookup_breaks(
+    tmp_path,
+) -> None:
     log_dir = tmp_path / "logs"
     trading_day = date(2026, 4, 10)
     generated_at = datetime(2026, 4, 10, 15, 30, tzinfo=KST)
@@ -169,12 +169,14 @@ def test_market_close_runtime_writes_failure_report_before_raising(tmp_path) -> 
         clock=lambda: generated_at,
     )
 
-    with pytest.raises(RuntimeError, match="broker unavailable"):
-        runtime.run(timestamp=generated_at, triggered_at=generated_at)
+    result = runtime.run(timestamp=generated_at, triggered_at=generated_at)
 
     daily_report = load_daily_run_report(log_dir, trading_day)
     inspection_report = load_daily_inspection_report(log_dir, trading_day)
 
+    assert result.total_jobs == 2
+    assert result.failed_jobs == 1
+    assert result.holdings == 0
     assert daily_report is not None
     assert daily_report.total_jobs == 2
     assert daily_report.failed_jobs == 1
@@ -187,7 +189,7 @@ def test_market_close_runtime_writes_failure_report_before_raising(tmp_path) -> 
     assert any(
         item.label == "오류 로그 점검"
         and item.status is InspectionStatus.FAILED
-        and item.detail == "broker unavailable"
+        and "market_close_cleanup:broker unavailable" in (item.detail or "")
         for item in inspection_report.items
     )
     assert len(notifier.notifications) == 1
@@ -237,6 +239,55 @@ def test_market_close_runtime_safe_stop_cleanup_records_runner_exception(
     assert (
         "safe stop 원인 확인: reason=runner_exception detail=scheduler loop crashed"
         in (result.next_day_preparation_path.read_text(encoding="utf-8"))
+    )
+    assert len(notifier.notifications) == 1
+    assert "[FAILED]" in notifier.notifications[0].subject
+
+
+def test_market_close_runtime_safe_stop_cleanup_is_best_effort_on_broker_failure(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    trading_day = date(2026, 4, 10)
+    generated_at = datetime(2026, 4, 10, 11, 0, tzinfo=KST)
+    settings = _settings(log_dir)
+    notifier = RecordingNotifier()
+    runtime = MarketCloseRuntime(
+        settings=settings,
+        broker_reader=BrokenBrokerReader(),
+        notifier=notifier,
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: generated_at,
+    )
+
+    result = runtime.run_safe_stop_cleanup(
+        timestamp=generated_at,
+        reason="runner_exception",
+        detail="scheduler loop crashed",
+    )
+    daily_report = load_daily_run_report(log_dir, trading_day)
+    inspection_report = load_daily_inspection_report(log_dir, trading_day)
+
+    assert result.total_jobs == 2
+    assert result.failed_jobs == 2
+    assert result.holdings == 0
+    assert daily_report is not None
+    assert any(
+        report_result.job_name == "runner_safe_stop"
+        and report_result.error == "runner_exception:scheduler loop crashed"
+        for report_result in daily_report.job_results
+    )
+    assert any(
+        report_result.job_name == "market_close_cleanup"
+        and report_result.error == "broker unavailable"
+        for report_result in daily_report.job_results
+    )
+    assert inspection_report is not None
+    assert any(
+        item.label == "오류 로그 점검"
+        and item.status is InspectionStatus.FAILED
+        and "market_close_cleanup:broker unavailable" in (item.detail or "")
+        for item in inspection_report.items
     )
     assert len(notifier.notifications) == 1
     assert "[FAILED]" in notifier.notifications[0].subject

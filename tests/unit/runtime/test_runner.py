@@ -37,7 +37,7 @@ def test_scheduled_runner_safe_stops_and_notifies_on_job_failure(tmp_path) -> No
     result = runner.run_forever(max_iterations=3)
 
     assert result.status is RunnerStatus.SAFE_STOP
-    assert result.stop_reason == "live_cycle:market_open:2026-04-10T09:00:00+09:00"
+    assert result.stop_reason == "live_cycle:market_open:2026-04-10T08:00:00+09:00"
     assert len(notifier.notifications) == 1
     assert notifier.notifications[0].subject == (
         "AutoTrade runner safe stop [job_failure]"
@@ -45,7 +45,7 @@ def test_scheduled_runner_safe_stops_and_notifies_on_job_failure(tmp_path) -> No
     assert state_store.load().is_executed(
         job_name="live_cycle",
         phase=MarketSessionPhase.MARKET_OPEN,
-        scheduled_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        scheduled_at=datetime(2026, 4, 10, 8, 0, tzinfo=KST),
     )
 
 
@@ -85,7 +85,7 @@ def test_scheduled_runner_sleeps_to_next_trading_day_after_holiday(tmp_path) -> 
         SchedulerState().mark_executed(
             job_name="live_cycle",
             phase=MarketSessionPhase.MARKET_OPEN,
-            scheduled_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+            scheduled_at=datetime(2026, 4, 10, 8, 0, tzinfo=KST),
         )
     )
     clock = AdjustableClock(datetime(2026, 4, 10, 15, 30, tzinfo=KST))
@@ -115,8 +115,8 @@ def test_scheduled_runner_sleeps_to_next_trading_day_after_holiday(tmp_path) -> 
     result = runner.run_forever(max_iterations=2)
 
     assert result.status is RunnerStatus.COMPLETED
-    assert calls == [datetime(2026, 4, 14, 9, 0, tzinfo=KST)]
-    assert sleep_calls == [322200.0]
+    assert calls == [datetime(2026, 4, 14, 8, 0, tzinfo=KST)]
+    assert sleep_calls == [318600.0]
 
 
 def test_scheduled_runner_writes_operations_log_for_executed_jobs(tmp_path) -> None:

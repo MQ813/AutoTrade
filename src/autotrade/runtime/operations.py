@@ -178,6 +178,11 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
             settings=settings,
             strategy_kind=services.strategy_kind.value,
             timeframe=services.runtime.timeframe,
+            bar_root=services.bar_root,
+            broker_reader=services.broker_reader,
+            notifier=services.notifier,
+            state_store=services.state_store,
+            collect_strategy_bars=_collect_strategy_bars,
         )
         market_close_runtime = MarketCloseRuntime(
             settings=settings,
@@ -235,12 +240,27 @@ def _handle_market_open(args: argparse.Namespace) -> int:
         return EXIT_CODE_CONFIGURATION_ERROR
 
     strategy_kind = StrategyKind(args.strategy)
-    runtime = MarketOpenPreparationRuntime(
-        settings=settings,
-        strategy_kind=strategy_kind.value,
-        timeframe=strategy_timeframe_for(strategy_kind),
-    )
-    result = runtime.run()
+    try:
+        services = _build_operation_services(
+            settings,
+            strategy_kind=strategy_kind,
+            bar_root=None,
+            paper_cash_override=None,
+        )
+        runtime = MarketOpenPreparationRuntime(
+            settings=settings,
+            strategy_kind=strategy_kind.value,
+            timeframe=strategy_timeframe_for(strategy_kind),
+            bar_root=services.bar_root,
+            broker_reader=services.broker_reader,
+            notifier=services.notifier,
+            state_store=services.state_store,
+            collect_strategy_bars=_collect_strategy_bars,
+        )
+        result = runtime.run()
+    except Exception as exc:
+        _log_operation_failure("market-open", exc)
+        return EXIT_CODE_OPERATION_FAILED
     print(result.render_summary())
     print(f"스모크 리포트 파일: {result.smoke_report_path}")
     print(f"점검 리포트 파일: {result.inspection_report_path}")

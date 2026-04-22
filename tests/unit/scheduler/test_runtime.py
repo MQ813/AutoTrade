@@ -22,7 +22,7 @@ def test_build_session_slots_for_trading_day() -> None:
 
     assert len(slots) == 14
     assert slots[0].phase == MarketSessionPhase.MARKET_OPEN
-    assert slots[0].scheduled_at == datetime(2026, 4, 10, 9, 0, tzinfo=KST)
+    assert slots[0].scheduled_at == datetime(2026, 4, 10, 8, 0, tzinfo=KST)
     assert slots[1].phase == MarketSessionPhase.INTRADAY
     assert slots[1].scheduled_at == datetime(2026, 4, 10, 9, 30, tzinfo=KST)
     assert slots[-2].scheduled_at == datetime(2026, 4, 10, 15, 0, tzinfo=KST)
@@ -46,7 +46,7 @@ def test_collect_due_jobs_skips_completed_runs() -> None:
     state = SchedulerState().mark_executed(
         job_name="prepare",
         phase=MarketSessionPhase.MARKET_OPEN,
-        scheduled_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        scheduled_at=datetime(2026, 4, 10, 8, 0, tzinfo=KST),
     )
 
     due_jobs = collect_due_jobs(
@@ -69,6 +69,53 @@ def test_collect_due_jobs_skips_completed_runs() -> None:
             datetime(2026, 4, 10, 10, 0, tzinfo=KST),
         ),
     ]
+
+
+def test_collect_due_jobs_skips_stale_intraday_backlog() -> None:
+    jobs = (
+        ScheduledJob(
+            name="heartbeat",
+            phase=MarketSessionPhase.INTRADAY,
+            handler=lambda context: None,
+        ),
+    )
+
+    due_jobs = collect_due_jobs(
+        jobs,
+        timestamp=datetime(2026, 4, 10, 10, 5, tzinfo=KST),
+    )
+
+    assert [
+        (pending.job.name, pending.phase, pending.scheduled_at) for pending in due_jobs
+    ] == [
+        (
+            "heartbeat",
+            MarketSessionPhase.INTRADAY,
+            datetime(2026, 4, 10, 10, 0, tzinfo=KST),
+        ),
+    ]
+
+
+def test_collect_due_jobs_skips_stale_after_hours_backlog() -> None:
+    jobs = (
+        ScheduledJob(
+            name="heartbeat",
+            phase=MarketSessionPhase.INTRADAY,
+            handler=lambda context: None,
+        ),
+        ScheduledJob(
+            name="cleanup",
+            phase=MarketSessionPhase.MARKET_CLOSE,
+            handler=lambda context: None,
+        ),
+    )
+
+    due_jobs = collect_due_jobs(
+        jobs,
+        timestamp=datetime(2026, 4, 10, 21, 20, tzinfo=KST),
+    )
+
+    assert due_jobs == ()
 
 
 def test_run_scheduled_jobs_executes_due_handlers_once_and_captures_failures() -> None:
@@ -114,7 +161,7 @@ def test_run_scheduled_jobs_executes_due_handlers_once_and_captures_failures() -
         (
             "prepare",
             MarketSessionPhase.MARKET_OPEN,
-            datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+            datetime(2026, 4, 10, 8, 0, tzinfo=KST),
         ),
         (
             "heartbeat",
@@ -184,7 +231,7 @@ def test_next_scheduled_run_at_skips_holiday_after_close() -> None:
         calendar=calendar,
     )
 
-    assert next_run == datetime(2026, 4, 14, 9, 0, tzinfo=KST)
+    assert next_run == datetime(2026, 4, 14, 8, 0, tzinfo=KST)
 
 
 def test_run_scheduled_jobs_uses_last_completion_time_for_next_run() -> None:

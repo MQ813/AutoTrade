@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
+from datetime import time
 from datetime import timedelta
 from enum import StrEnum
 from typing import Protocol
@@ -19,6 +20,7 @@ _SESSION_DURATION = datetime.combine(
     date(2000, 1, 1),
     KRX_SESSION_CLOSE,
 ) - datetime.combine(date(2000, 1, 1), KRX_SESSION_OPEN)
+_PRE_MARKET_PREPARATION_TIME = time(8, 0)
 
 
 def _require_aware_datetime(field_name: str, value: datetime) -> None:
@@ -215,9 +217,14 @@ def build_session_slots(
     if not resolved_calendar.is_trading_day(trading_day):
         return ()
 
+    prepare_at = datetime.combine(
+        trading_day,
+        _PRE_MARKET_PREPARATION_TIME,
+        tzinfo=KST,
+    )
     open_at = datetime.combine(trading_day, KRX_SESSION_OPEN, tzinfo=KST)
     close_at = datetime.combine(trading_day, KRX_SESSION_CLOSE, tzinfo=KST)
-    slots = [SessionSlot(phase=MarketSessionPhase.MARKET_OPEN, scheduled_at=open_at)]
+    slots = [SessionSlot(phase=MarketSessionPhase.MARKET_OPEN, scheduled_at=prepare_at)]
 
     current = open_at + resolved_config.intraday_interval
     while current < close_at:
@@ -249,6 +256,7 @@ def collect_due_jobs(
     _require_aware_datetime("timestamp", timestamp)
 
     local_timestamp = timestamp.astimezone(KST)
+    resolved_config = config or SchedulerConfig()
     resolved_state = state or SchedulerState()
     resolved_calendar = calendar or KrxRegularSessionCalendar()
 
@@ -257,13 +265,19 @@ def collect_due_jobs(
 
     slots = build_session_slots(
         local_timestamp.date(),
-        config=config,
+        config=resolved_config,
         calendar=resolved_calendar,
     )
     due_jobs: list[PendingJob] = []
     for slot in slots:
         if slot.scheduled_at > local_timestamp:
             break
+        if _is_stale_slot(
+            slot,
+            timestamp=local_timestamp,
+            config=resolved_config,
+        ):
+            continue
         for job in jobs:
             if job.phase != slot.phase:
                 continue
@@ -281,6 +295,20 @@ def collect_due_jobs(
                 )
             )
     return tuple(due_jobs)
+
+
+def _is_stale_slot(
+    slot: SessionSlot,
+    *,
+    timestamp: datetime,
+    config: SchedulerConfig,
+) -> bool:
+    if slot.phase is MarketSessionPhase.MARKET_OPEN:
+        return False
+    slot_age = timestamp - slot.scheduled_at
+    if slot_age <= timedelta(0):
+        return False
+    return slot_age > config.intraday_interval
 
 
 def next_scheduled_run_at(
@@ -306,7 +334,11 @@ def next_scheduled_run_at(
     while True:
         next_day = next_day.fromordinal(next_day.toordinal() + 1)
         if resolved_calendar.is_trading_day(next_day):
-            return datetime.combine(next_day, KRX_SESSION_OPEN, tzinfo=KST)
+            return datetime.combine(
+                next_day,
+                _PRE_MARKET_PREPARATION_TIME,
+                tzinfo=KST,
+            )
 
 
 def run_scheduled_jobs(

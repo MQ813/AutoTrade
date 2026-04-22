@@ -417,6 +417,136 @@ def test_korea_investment_broker_reader_refreshes_expired_cached_token(
     assert transport.requests[1].headers["authorization"] == "Bearer fresh-token"
 
 
+def test_korea_investment_broker_reader_refreshes_expired_in_memory_token() -> None:
+    current_time = datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): [
+                json_response(
+                    {
+                        "access_token": "token-1",
+                        "expires_in": 300,
+                    },
+                ),
+                json_response(
+                    {
+                        "access_token": "token-2",
+                        "expires_in": 300,
+                    },
+                ),
+            ],
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345.67",
+                    },
+                },
+            ),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-balance"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        {
+                            "pdno": "069500",
+                            "hldg_qty": "1",
+                            "pchs_avg_pric": "9000",
+                            "prpr": "9500",
+                        }
+                    ],
+                },
+            ),
+        },
+    )
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: current_time,
+    )
+
+    reader.get_quote("069500")
+    current_time += timedelta(minutes=6)
+    holdings = reader.get_holdings()
+
+    assert holdings == (
+        Holding(
+            symbol="069500",
+            quantity=1,
+            average_price=Decimal("9000"),
+            current_price=Decimal("9500"),
+        ),
+    )
+    assert [request.method for request in transport.requests] == [
+        "POST",
+        "GET",
+        "POST",
+        "GET",
+    ]
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/trading/inquire-balance",
+    ]
+    assert transport.requests[1].headers["authorization"] == "Bearer token-1"
+    assert transport.requests[3].headers["authorization"] == "Bearer token-2"
+
+
+def test_korea_investment_broker_reader_retries_after_token_expiration_response() -> (
+    None
+):
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): [
+                json_response({"access_token": "token-1"}),
+                json_response({"access_token": "token-2"}),
+            ],
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): [
+                json_response(
+                    {
+                        "msg_cd": "EGW00123",
+                        "msg1": "expired token",
+                    },
+                    status=500,
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "stck_bsop_date": "20260411",
+                            "stck_cntg_hour": "090000",
+                            "stck_prpr": "12345.67",
+                        },
+                    },
+                ),
+            ],
+        },
+    )
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    quote = reader.get_quote("069500")
+
+    assert quote == Quote(
+        symbol="069500",
+        price=Decimal("12345.67"),
+        as_of=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+    ]
+    assert transport.requests[1].headers["authorization"] == "Bearer token-1"
+    assert transport.requests[3].headers["authorization"] == "Bearer token-2"
+
+
 def test_korea_investment_broker_trader_submits_limit_order_with_hashkey() -> None:
     transport = RecordingTransport(
         {

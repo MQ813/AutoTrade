@@ -64,6 +64,8 @@ DEFAULT_DAILY_INSPECTION_ITEMS = (
     (InspectionWindow.PRE_MARKET, "전일 로그 이상 여부 확인"),
     (InspectionWindow.PRE_MARKET, "장운영 플래그 확인"),
     (InspectionWindow.PRE_MARKET, "대상 종목 목록 확인"),
+    (InspectionWindow.PRE_MARKET, "전략 입력 데이터 최신성 확인"),
+    (InspectionWindow.PRE_MARKET, "오늘 가격 기준 전략 예상 확인"),
     (InspectionWindow.PRE_MARKET, "계좌/잔고 상태 확인"),
     (InspectionWindow.PRE_MARKET, "비상 정지 플래그 확인"),
     (InspectionWindow.INTRADAY, "스케줄러 정상 동작 확인"),
