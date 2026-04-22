@@ -27,6 +27,7 @@ def test_load_settings_returns_app_settings_with_default_provider(
     assert settings.broker.provider == "koreainvestment"
     assert settings.broker.environment == "paper"
     assert settings.broker.paper_trading_mode == "simulate"
+    assert settings.broker.hts_id is None
     assert settings.target_symbols == ("069500", "357870", "114800")
     assert settings.log_dir == tmp_path / "logs"
     assert settings.telegram.enabled is False
@@ -126,6 +127,17 @@ def test_load_settings_accepts_paper_broker_trading_mode(tmp_path: Path) -> None
     )
 
     assert settings.broker.paper_trading_mode == "broker"
+
+
+def test_load_settings_reads_optional_broker_hts_id(tmp_path: Path) -> None:
+    settings = load_settings(
+        _make_env(
+            tmp_path,
+            AUTOTRADE_BROKER_HTS_ID="my-hts-id",
+        ),
+    )
+
+    assert settings.broker.hts_id == "my-hts-id"
 
 
 def test_load_settings_expands_log_dir_environment_variables(

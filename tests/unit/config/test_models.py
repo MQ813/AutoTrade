@@ -48,6 +48,18 @@ def test_telegram_settings_require_bot_token_and_chat_id_when_enabled() -> None:
         TelegramSettings(enabled=True)
 
 
+def test_broker_settings_reject_blank_hts_id() -> None:
+    with pytest.raises(ValueError):
+        BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+            hts_id=" ",
+        )
+
+
 def _make_broker_settings() -> BrokerSettings:
     return BrokerSettings(
         provider="koreainvestment",

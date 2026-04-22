@@ -59,6 +59,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
     api_key = _read_required_value(environment, "AUTOTRADE_BROKER_API_KEY")
     api_secret = _read_required_value(environment, "AUTOTRADE_BROKER_API_SECRET")
     account = _read_required_value(environment, "AUTOTRADE_BROKER_ACCOUNT")
+    hts_id = _read_optional_text(environment, "AUTOTRADE_BROKER_HTS_ID")
     target_symbols = _parse_target_symbols(
         _read_required_value(environment, TARGET_SYMBOLS_ENV_KEY),
     )
@@ -72,6 +73,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> AppSettings:
             account=account,
             environment=broker_environment,
             paper_trading_mode=paper_trading_mode,
+            hts_id=hts_id,
         ),
         target_symbols=target_symbols,
         log_dir=log_dir,

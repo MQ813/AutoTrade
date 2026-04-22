@@ -16,3 +16,5 @@ test_paper.log
 logs/paper_*/
 .env
 graphify-out/cache
+universe_etf.csv
+universe_stock.csv

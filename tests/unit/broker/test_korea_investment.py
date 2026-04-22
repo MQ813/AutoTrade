@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import time
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
@@ -759,6 +762,142 @@ def test_korea_investment_broker_trader_returns_cumulative_fill_snapshot() -> No
             price=Decimal("10050"),
             filled_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
         ),
+    )
+
+
+def test_korea_investment_broker_trader_returns_realtime_fill_notice_without_history(
+) -> None:
+    websocket = ScriptedWebSocketConnection(
+        [
+            _fill_notice_ack_message(tr_id="H0STCNI9"),
+            _fill_notice_data_message(
+                tr_id="H0STCNI9",
+                payload=_fill_notice_payload(
+                    order_id="order-1",
+                    quantity="2",
+                    price="10050",
+                    filled_at="090001",
+                ),
+            ),
+        ]
+    )
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("POST", "/oauth2/Approval"): json_response(
+                {"approval_key": "approval-123"}
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response({"rt_cd": "0", "output1": []}),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(hts_id="my-hts-id"),
+        transport=transport,
+        websocket_connector=lambda url: websocket,
+        clock=lambda: datetime(2026, 4, 11, 9, 3, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    try:
+        fills = _wait_for_realtime_fills(trader, "order-1")
+    finally:
+        trader.close()
+
+    assert fills == (
+        ExecutionFill(
+            fill_id=f"order-1:ws:{_fill_notice_hash('order-1', '2', '10050', '090001')}",
+            order_id="order-1",
+            symbol="069500",
+            quantity=2,
+            price=Decimal("10050"),
+            filled_at=datetime(2026, 4, 11, 9, 0, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+        ),
+    )
+    assert json.loads(websocket.sent_texts[0]) == {
+        "header": {
+            "approval_key": "approval-123",
+            "content-type": "utf-8",
+            "custtype": "P",
+            "tr_type": "1",
+        },
+        "body": {
+            "input": {
+                "tr_id": "H0STCNI9",
+                "tr_key": "my-hts-id",
+            }
+        },
+    }
+
+
+def test_korea_investment_broker_trader_returns_realtime_fill_before_cumulative_fill() -> (
+    None
+):
+    websocket = ScriptedWebSocketConnection(
+        [
+            _fill_notice_ack_message(tr_id="H0STCNI9"),
+            _fill_notice_data_message(
+                tr_id="H0STCNI9",
+                payload=_fill_notice_payload(
+                    order_id="order-1",
+                    quantity="2",
+                    price="10050",
+                    filled_at="090001",
+                ),
+            ),
+        ]
+    )
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("POST", "/oauth2/Approval"): json_response(
+                {"approval_key": "approval-123"}
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        _order_history_row(
+                            order_id="order-1",
+                            filled_quantity="5",
+                            average_price="10080",
+                        )
+                    ],
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(hts_id="my-hts-id"),
+        transport=transport,
+        websocket_connector=lambda url: websocket,
+        clock=lambda: datetime(2026, 4, 11, 9, 3, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    try:
+        fills = _wait_for_realtime_fills(trader, "order-1", expected_count=2)
+    finally:
+        trader.close()
+
+    assert fills[0] == ExecutionFill(
+        fill_id=f"order-1:ws:{_fill_notice_hash('order-1', '2', '10050', '090001')}",
+        order_id="order-1",
+        symbol="069500",
+        quantity=2,
+        price=Decimal("10050"),
+        filled_at=datetime(2026, 4, 11, 9, 0, 1, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert fills[1] == ExecutionFill(
+        fill_id="order-1:cumulative",
+        order_id="order-1",
+        symbol="069500",
+        quantity=5,
+        price=Decimal("10080"),
+        filled_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
     )
 
 
@@ -1563,13 +1702,18 @@ def test_resolve_min_request_interval_seconds_uses_environment_default(
     )
 
 
-def _make_settings(environment: BrokerEnvironment = "paper") -> BrokerSettings:
+def _make_settings(
+    environment: BrokerEnvironment = "paper",
+    *,
+    hts_id: str | None = None,
+) -> BrokerSettings:
     return BrokerSettings(
         provider="koreainvestment",
         api_key="demo-key",
         api_secret="demo-secret",
         account="12345678-01",
         environment=environment,
+        hts_id=hts_id,
     )
 
 
@@ -1606,6 +1750,145 @@ class RecordingTransport:
                 raise AssertionError(f"missing scripted response for: {key}")
             return response.pop(0)
         return response
+
+
+class ScriptedWebSocketConnection:
+    def __init__(self, messages: list[str]) -> None:
+        self._messages = list(messages)
+        self.sent_texts: list[str] = []
+        self.sent_pongs: list[bytes] = []
+        self.closed = False
+
+    def send_text(self, payload: str) -> None:
+        self.sent_texts.append(payload)
+
+    def send_pong(self, payload: bytes = b"") -> None:
+        self.sent_pongs.append(payload)
+
+    def receive_text(self, *, timeout_seconds: float | None = None) -> str:
+        del timeout_seconds
+        if self.closed:
+            raise ConnectionError("websocket closed")
+        if self._messages:
+            return self._messages.pop(0)
+        raise TimeoutError()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _wait_for_realtime_fills(
+    trader: KoreaInvestmentBrokerTrader,
+    order_id: str,
+    *,
+    expected_count: int = 1,
+) -> tuple[ExecutionFill, ...]:
+    deadline = time.monotonic() + 1.0
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            fills = trader.get_fills(order_id)
+        except KoreaInvestmentBrokerError as error:
+            last_error = error
+            time.sleep(0.01)
+            continue
+        if len(fills) >= expected_count:
+            return fills
+        time.sleep(0.01)
+    if last_error is not None:
+        raise last_error
+    raise AssertionError("realtime fills did not arrive before timeout")
+
+
+def _fill_notice_ack_message(*, tr_id: str) -> str:
+    return json.dumps(
+        {
+            "header": {
+                "tr_id": tr_id,
+                "tr_key": "my-hts-id",
+                "encrypt": "Y",
+            },
+            "body": {
+                "rt_cd": "0",
+                "msg1": "OK",
+                "output": {
+                    "key": "0123456789abcdef0123456789abcdef",
+                    "iv": "abcdef9876543210",
+                },
+            },
+        }
+    )
+
+
+def _fill_notice_data_message(*, tr_id: str, payload: str) -> str:
+    return (
+        f"0|{tr_id}|1|"
+        f"{_encrypt_fill_notice_payload(payload)}"
+    )
+
+
+def _encrypt_fill_notice_payload(payload: str) -> str:
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import pad
+
+    key = b"0123456789abcdef0123456789abcdef"
+    iv = b"abcdef9876543210"
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    encrypted = cipher.encrypt(pad(payload.encode("utf-8"), AES.block_size))
+    return base64.b64encode(encrypted).decode("ascii")
+
+
+def _fill_notice_hash(
+    order_id: str,
+    quantity: str,
+    price: str,
+    filled_at: str,
+) -> str:
+    payload = _fill_notice_payload(
+        order_id=order_id,
+        quantity=quantity,
+        price=price,
+        filled_at=filled_at,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _fill_notice_payload(
+    *,
+    order_id: str,
+    quantity: str,
+    price: str,
+    filled_at: str,
+) -> str:
+    values = [
+        "",
+        "12345678-01",
+        order_id,
+        "",
+        "02",
+        "",
+        "",
+        "",
+        "069500",
+        quantity,
+        price,
+        filled_at,
+        "N",
+        "2",
+        "Y",
+        "06010",
+        quantity,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        price,
+    ]
+    return "^".join(values)
 
 
 def _order_history_row(

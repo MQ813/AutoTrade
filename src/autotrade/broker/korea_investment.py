@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
 import re
+import socket
+import ssl
+import struct
 import threading
 import time
 from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -64,6 +69,7 @@ PAPER_ACCOUNT_PATTERN: Final[re.Pattern[str]] = re.compile(
 PAPER_PRODUCT_CODE: Final[str] = "01"
 TOKEN_CACHE_REFRESH_BUFFER: Final[timedelta] = timedelta(minutes=1)
 KIS_TOKEN_PATH: Final[str] = "/oauth2/tokenP"
+KIS_APPROVAL_PATH: Final[str] = "/oauth2/Approval"
 KIS_HASHKEY_PATH: Final[str] = "/uapi/hashkey"
 KIS_QUOTE_PATH: Final[str] = "/uapi/domestic-stock/v1/quotations/inquire-price"
 KIS_DAILY_CHART_PATH: Final[str] = (
@@ -95,6 +101,42 @@ KIS_INTRADAY_CHART_PAGE_SIZE: Final[int] = 120
 KIS_INTRADAY_MAX_PAGE_COUNT: Final[int] = 64
 KIS_CUMULATIVE_FILL_ID_SUFFIX: Final[str] = ":cumulative"
 KIS_TOKEN_EXPIRED_MSG_CODE: Final[str] = "EGW00123"
+KIS_WS_LIVE_URL: Final[str] = "ws://ops.koreainvestment.com:21000/tryitout"
+KIS_WS_PAPER_URL: Final[str] = "ws://ops.koreainvestment.com:31000/tryitout"
+KIS_LIVE_CCNL_NOTICE_TR_ID: Final[str] = "H0STCNI0"
+KIS_PAPER_CCNL_NOTICE_TR_ID: Final[str] = "H0STCNI9"
+KIS_WS_SUBSCRIBE_TR_TYPE: Final[str] = "1"
+KIS_WS_CUSTOMER_TYPE: Final[str] = "P"
+KIS_WS_TIMEOUT_SECONDS: Final[float] = 5.0
+KIS_WS_RECONNECT_DELAY_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0, 5.0)
+KIS_CCNL_NOTICE_COLUMNS: Final[tuple[str, ...]] = (
+    "CUST_ID",
+    "ACNT_NO",
+    "ODER_NO",
+    "OODER_NO",
+    "SELN_BYOV_CLS",
+    "RCTF_CLS",
+    "ODER_KIND",
+    "ODER_COND",
+    "STCK_SHRN_ISCD",
+    "CNTG_QTY",
+    "CNTG_UNPR",
+    "STCK_CNTG_HOUR",
+    "RFUS_YN",
+    "CNTG_YN",
+    "ACPT_YN",
+    "BRNC_NO",
+    "ODER_QTY",
+    "ACNT_NAME",
+    "ORD_COND_PRC",
+    "ORD_EXG_GB",
+    "POPUP_YN",
+    "FILLER",
+    "CRDT_CLS",
+    "CRDT_LOAN_DATE",
+    "CNTG_ISNM40",
+    "ODER_PRC",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -119,12 +161,411 @@ class KoreaInvestmentBrokerError(RuntimeError):
 
 
 HttpTransport = Callable[[HttpRequest], HttpResponse]
+WebSocketConnector = Callable[[str], "_WebSocketConnection"]
 
 
 @dataclass(frozen=True, slots=True)
 class CachedAccessToken:
     access_token: str
     expires_at: datetime | None
+
+
+class _WebSocketConnection:
+    _GUID: Final[str] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float = KIS_WS_TIMEOUT_SECONDS,
+    ) -> None:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"ws", "wss"}:
+            raise KoreaInvestmentBrokerError(
+                f"unsupported websocket scheme: {parsed.scheme}"
+            )
+        if parsed.hostname is None:
+            raise KoreaInvestmentBrokerError("websocket url missing hostname")
+
+        port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+        raw_socket = socket.create_connection(
+            (parsed.hostname, port),
+            timeout=timeout_seconds,
+        )
+        connected_socket: socket.socket
+        if parsed.scheme == "wss":
+            context = ssl.create_default_context()
+            connected_socket = context.wrap_socket(
+                raw_socket,
+                server_hostname=parsed.hostname,
+            )
+        else:
+            connected_socket = raw_socket
+        self._socket = connected_socket
+        self._socket.settimeout(timeout_seconds)
+        self._buffer = bytearray()
+        self._closed = False
+        self._handshake(parsed)
+
+    def send_text(self, payload: str) -> None:
+        self._send_frame(0x1, payload.encode("utf-8"))
+
+    def send_pong(self, payload: bytes = b"") -> None:
+        self._send_frame(0xA, payload)
+
+    def receive_text(self, *, timeout_seconds: float | None = None) -> str:
+        if timeout_seconds is not None:
+            self._socket.settimeout(timeout_seconds)
+
+        fragments: list[bytes] = []
+        expecting_continuation = False
+        while True:
+            fin, opcode, payload = self._read_frame()
+            if opcode == 0x0:
+                if not expecting_continuation:
+                    raise KoreaInvestmentBrokerError(
+                        "unexpected websocket continuation frame"
+                    )
+                fragments.append(payload)
+                if fin:
+                    return b"".join(fragments).decode("utf-8")
+                continue
+            if opcode == 0x1:
+                if fin:
+                    return payload.decode("utf-8")
+                fragments = [payload]
+                expecting_continuation = True
+                continue
+            if opcode == 0x8:
+                raise ConnectionError("websocket connection closed by server")
+            if opcode == 0x9:
+                self.send_pong(payload)
+                continue
+            if opcode == 0xA:
+                continue
+            raise KoreaInvestmentBrokerError(
+                f"unsupported websocket opcode: {opcode}"
+            )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._send_frame(0x8, b"")
+        except OSError:
+            pass
+        finally:
+            self._socket.close()
+
+    def _handshake(self, parsed_url) -> None:
+        path = parsed_url.path or "/"
+        if parsed_url.query:
+            path = f"{path}?{parsed_url.query}"
+        host = parsed_url.netloc
+        websocket_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        request = "\r\n".join(
+            (
+                f"GET {path} HTTP/1.1",
+                f"Host: {host}",
+                "Upgrade: websocket",
+                "Connection: Upgrade",
+                f"Sec-WebSocket-Key: {websocket_key}",
+                "Sec-WebSocket-Version: 13",
+                "",
+                "",
+            )
+        )
+        self._socket.sendall(request.encode("ascii"))
+
+        response = self._read_http_response()
+        if not response.startswith("HTTP/1.1 101 "):
+            raise KoreaInvestmentBrokerError(
+                f"websocket handshake failed: {response.splitlines()[0]}"
+            )
+
+        header_lines = response.split("\r\n")[1:]
+        headers: dict[str, str] = {}
+        for line in header_lines:
+            if not line or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            headers[key.strip().lower()] = value.strip()
+
+        accept_key = headers.get("sec-websocket-accept")
+        expected_accept = base64.b64encode(
+            hashlib.sha1((websocket_key + self._GUID).encode("ascii")).digest()
+        ).decode("ascii")
+        if accept_key != expected_accept:
+            raise KoreaInvestmentBrokerError(
+                "websocket handshake returned invalid Sec-WebSocket-Accept"
+            )
+
+    def _read_http_response(self) -> str:
+        while b"\r\n\r\n" not in self._buffer:
+            chunk = self._socket.recv(4096)
+            if not chunk:
+                raise ConnectionError("websocket closed during handshake")
+            self._buffer.extend(chunk)
+        header_bytes, _, remainder = self._buffer.partition(b"\r\n\r\n")
+        self._buffer = bytearray(remainder)
+        return header_bytes.decode("utf-8", errors="replace")
+
+    def _read_frame(self) -> tuple[bool, int, bytes]:
+        first_byte, second_byte = self._read_exact(2)
+        fin = bool(first_byte & 0x80)
+        opcode = first_byte & 0x0F
+        masked = bool(second_byte & 0x80)
+        payload_length = second_byte & 0x7F
+        if payload_length == 126:
+            payload_length = struct.unpack("!H", self._read_exact(2))[0]
+        elif payload_length == 127:
+            payload_length = struct.unpack("!Q", self._read_exact(8))[0]
+        mask_key = self._read_exact(4) if masked else b""
+        payload = self._read_exact(payload_length)
+        if masked:
+            payload = bytes(
+                value ^ mask_key[index % 4] for index, value in enumerate(payload)
+            )
+        return fin, opcode, payload
+
+    def _read_exact(self, size: int) -> bytes:
+        while len(self._buffer) < size:
+            chunk = self._socket.recv(4096)
+            if not chunk:
+                raise ConnectionError("websocket connection closed")
+            self._buffer.extend(chunk)
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        if self._closed and opcode != 0x8:
+            raise ConnectionError("websocket connection is already closed")
+        header = bytearray([0x80 | (opcode & 0x0F)])
+        payload_length = len(payload)
+        if payload_length < 126:
+            header.append(0x80 | payload_length)
+        elif payload_length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", payload_length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", payload_length))
+
+        mask_key = os.urandom(4)
+        masked_payload = bytes(
+            value ^ mask_key[index % 4] for index, value in enumerate(payload)
+        )
+        self._socket.sendall(bytes(header) + mask_key + masked_payload)
+
+
+@dataclass(slots=True)
+class _RealtimeNoticeCryptoState:
+    encrypted: bool = False
+    key: str | None = None
+    iv: str | None = None
+
+
+class _RealtimeFillCache:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._fills_by_order: dict[str, dict[str, ExecutionFill]] = {}
+
+    def add(self, fill: ExecutionFill) -> None:
+        order_id = _normalize_order_identifier(fill.order_id)
+        with self._lock:
+            fills = self._fills_by_order.setdefault(order_id, {})
+            fills[fill.fill_id] = fill
+
+    def get(self, order_id: str) -> tuple[ExecutionFill, ...]:
+        normalized_order_id = _normalize_order_identifier(order_id)
+        with self._lock:
+            fills = tuple(self._fills_by_order.get(normalized_order_id, {}).values())
+        return tuple(
+            sorted(
+                (replace(fill, order_id=order_id) for fill in fills),
+                key=lambda fill: (fill.filled_at, fill.fill_id),
+            )
+        )
+
+
+class _KoreaInvestmentRealtimeFillListener:
+    def __init__(
+        self,
+        settings: BrokerSettings,
+        *,
+        request_approval_key: Callable[[], str],
+        fill_cache: _RealtimeFillCache,
+        websocket_connector: WebSocketConnector,
+        clock: Callable[[], datetime],
+        sleep: Callable[[float], None],
+    ) -> None:
+        if settings.hts_id is None:
+            raise ValueError("hts_id is required for realtime fill listener")
+        self._request_approval_key = request_approval_key
+        self._fill_cache = fill_cache
+        self._websocket_connector = websocket_connector
+        self._clock = clock
+        self._sleep = sleep
+        self._subscription_key = settings.hts_id
+        self._websocket_url = (
+            KIS_WS_PAPER_URL if settings.environment == "paper" else KIS_WS_LIVE_URL
+        )
+        self._tr_id = (
+            KIS_PAPER_CCNL_NOTICE_TR_ID
+            if settings.environment == "paper"
+            else KIS_LIVE_CCNL_NOTICE_TR_ID
+        )
+        self._thread_lock = threading.Lock()
+        self._active_connection_lock = threading.Lock()
+        self._active_connection: _WebSocketConnection | None = None
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    def ensure_started(self) -> None:
+        if self._stop_event.is_set():
+            return
+        with self._thread_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(
+                target=self._run,
+                name="kis-realtime-fill-listener",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def close(self) -> None:
+        self._stop_event.set()
+        with self._active_connection_lock:
+            connection = self._active_connection
+            self._active_connection = None
+        if connection is not None:
+            connection.close()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        delay_index = 0
+        while not self._stop_event.is_set():
+            connection: _WebSocketConnection | None = None
+            try:
+                approval_key = self._request_approval_key()
+                connection = self._websocket_connector(self._websocket_url)
+                with self._active_connection_lock:
+                    self._active_connection = connection
+                connection.send_text(
+                    _build_fill_notice_subscription_message(
+                        approval_key=approval_key,
+                        tr_id=self._tr_id,
+                        tr_key=self._subscription_key,
+                    )
+                )
+                crypto_state = _RealtimeNoticeCryptoState()
+                delay_index = 0
+                while not self._stop_event.is_set():
+                    try:
+                        message = connection.receive_text(timeout_seconds=1.0)
+                    except TimeoutError:
+                        continue
+                    except socket.timeout:
+                        continue
+                    self._handle_message(connection, message, crypto_state)
+            except Exception as error:
+                if self._stop_event.is_set():
+                    break
+                logger.warning(
+                    "KIS realtime fill listener disconnected, falling back to REST polling. reason=%s",
+                    error,
+                )
+                delay_seconds = KIS_WS_RECONNECT_DELAY_SECONDS[
+                    min(delay_index, len(KIS_WS_RECONNECT_DELAY_SECONDS) - 1)
+                ]
+                delay_index += 1
+                self._sleep(delay_seconds)
+            finally:
+                with self._active_connection_lock:
+                    active_connection = self._active_connection
+                    self._active_connection = None
+                if active_connection is not None:
+                    active_connection.close()
+                elif connection is not None:
+                    connection.close()
+
+    def _handle_message(
+        self,
+        connection: _WebSocketConnection,
+        message: str,
+        crypto_state: _RealtimeNoticeCryptoState,
+    ) -> None:
+        if message[:1] in {"0", "1"} and "|" in message:
+            self._handle_data_message(message, crypto_state)
+            return
+
+        try:
+            payload = json.loads(message)
+        except JSONDecodeError:
+            logger.debug("Ignoring non-JSON websocket system message: %s", message)
+            return
+        if not isinstance(payload, Mapping):
+            return
+
+        header = payload.get("header")
+        if not isinstance(header, Mapping):
+            return
+        tr_id = _optional_output_string(header.get("tr_id"))
+        if tr_id == "PINGPONG":
+            connection.send_pong(message.encode("utf-8"))
+            return
+        if tr_id != self._tr_id:
+            return
+
+        crypto_state.encrypted = _optional_output_string(header.get("encrypt")) == "Y"
+        body = payload.get("body")
+        if not isinstance(body, Mapping):
+            return
+        output = body.get("output")
+        if isinstance(output, Mapping):
+            key = _optional_output_string(output.get("key"))
+            iv = _optional_output_string(output.get("iv"))
+            if key is not None:
+                crypto_state.key = key
+            if iv is not None:
+                crypto_state.iv = iv
+        if body.get("rt_cd") not in {None, "0"}:
+            logger.warning(
+                "KIS realtime fill subscription was not acknowledged. rt_cd=%s msg=%s",
+                body.get("rt_cd"),
+                body.get("msg1"),
+            )
+
+    def _handle_data_message(
+        self,
+        message: str,
+        crypto_state: _RealtimeNoticeCryptoState,
+    ) -> None:
+        prefix, tr_id, _, payload = message.split("|", 3)
+        if prefix not in {"0", "1"} or tr_id != self._tr_id:
+            return
+
+        decoded_payload = payload
+        if crypto_state.encrypted:
+            if crypto_state.key is None or crypto_state.iv is None:
+                logger.warning(
+                    "Ignoring encrypted KIS fill notice before key exchange completes."
+                )
+                return
+            decoded_payload = _decrypt_fill_notice_payload(
+                key=crypto_state.key,
+                iv=crypto_state.iv,
+                cipher_text=payload,
+            )
+        for fill in _parse_realtime_fill_notices(
+            decoded_payload,
+            fallback=self._clock(),
+        ):
+            self._fill_cache.add(fill)
 
 
 class _RequestThrottle:
@@ -331,7 +772,7 @@ class _KoreaInvestmentApiClient:
         }
         if tr_id is not None:
             headers["tr_id"] = tr_id
-        if path != KIS_TOKEN_PATH:
+        if path not in {KIS_TOKEN_PATH, KIS_APPROVAL_PATH}:
             headers["authorization"] = f"Bearer {self._get_access_token()}"
             headers["custtype"] = "P"
         if hashkey_body is not None:
@@ -346,6 +787,23 @@ class _KoreaInvestmentApiClient:
         if not isinstance(hashkey, str) or not hashkey.strip():
             raise KoreaInvestmentBrokerError("hashkey response missing HASH")
         return hashkey.strip()
+
+    def _request_approval_key(self) -> str:
+        payload = self._request_json(
+            "POST",
+            KIS_APPROVAL_PATH,
+            body={
+                "grant_type": "client_credentials",
+                "appkey": self._settings.api_key,
+                "secretkey": self._settings.api_secret,
+            },
+        )
+        approval_key = payload.get("approval_key")
+        if not isinstance(approval_key, str) or not approval_key.strip():
+            raise KoreaInvestmentBrokerError(
+                "approval response missing approval_key"
+            )
+        return approval_key.strip()
 
     def _get_access_token(self) -> str:
         if self._has_usable_access_token():
@@ -811,6 +1269,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         sleep: Callable[[float], None] | None = None,
         monotonic: Callable[[], float] | None = None,
         min_request_interval_seconds: float | None = None,
+        websocket_connector: WebSocketConnector | None = None,
     ) -> None:
         super().__init__(
             settings,
@@ -840,8 +1299,22 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         self._order_history_tr_id = (
             "VTTC8001R" if settings.environment == "paper" else "TTTC8001R"
         )
+        self._realtime_fill_cache = _RealtimeFillCache()
+        self._realtime_fill_listener = (
+            _KoreaInvestmentRealtimeFillListener(
+                settings,
+                request_approval_key=self._request_approval_key,
+                fill_cache=self._realtime_fill_cache,
+                websocket_connector=websocket_connector or _open_websocket_connection,
+                clock=self._clock,
+                sleep=self._sleep,
+            )
+            if settings.hts_id is not None
+            else None
+        )
 
     def submit_order(self, request: OrderRequest) -> ExecutionOrder:
+        self._ensure_realtime_fill_listener_started()
         if request.order_type is not OrderType.LIMIT:
             raise KoreaInvestmentBrokerError(
                 f"unsupported order_type={request.order_type}"
@@ -885,6 +1358,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def amend_order(self, request: OrderAmendRequest) -> ExecutionOrder:
+        self._ensure_realtime_fill_listener_started()
         current_record = self._require_order_record_for_management(
             request.order_id,
             reference_time=request.requested_at,
@@ -955,6 +1429,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def cancel_order(self, request: OrderCancelRequest) -> ExecutionOrder:
+        self._ensure_realtime_fill_listener_started()
         current_record = self._require_order_record_for_management(
             request.order_id,
             reference_time=request.requested_at,
@@ -1066,21 +1541,24 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
+        self._ensure_realtime_fill_listener_started()
+        realtime_fills = self._realtime_fill_cache.get(order_id)
         record = self._find_order_record_for_fills(
             order_id, reference_time=self._clock()
         )
         if record is None:
-            raise KoreaInvestmentBrokerError(
-                f"order history missing order_id={order_id}"
-            )
+            if realtime_fills:
+                return realtime_fills
+            raise KoreaInvestmentBrokerError(f"order history missing order_id={order_id}")
         filled_quantity = _coerce_optional_int(record.get("tot_ccld_qty")) or 0
         if filled_quantity <= 0:
-            return ()
+            return realtime_fills
 
         average_price_raw = record.get("avg_prvs")
         if _is_blank_value(average_price_raw):
             average_price_raw = record.get("ord_unpr")
         return (
+            *realtime_fills,
             ExecutionFill(
                 fill_id=f"{order_id}{KIS_CUMULATIVE_FILL_ID_SUFFIX}",
                 order_id=order_id,
@@ -1090,6 +1568,10 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                 filled_at=_parse_fill_timestamp(record, fallback=self._clock()),
             ),
         )
+
+    def close(self) -> None:
+        if self._realtime_fill_listener is not None:
+            self._realtime_fill_listener.close()
 
     def _require_order_record(
         self,
@@ -1274,6 +1756,148 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             self._remember_management_order_record(history_match)
             return history_match
         return self._lookup_management_order_record(order_id, require_branch=False)
+
+    def _ensure_realtime_fill_listener_started(self) -> None:
+        if self._realtime_fill_listener is None:
+            return
+        self._realtime_fill_listener.ensure_started()
+
+
+def _open_websocket_connection(url: str) -> _WebSocketConnection:
+    return _WebSocketConnection(url, timeout_seconds=KIS_WS_TIMEOUT_SECONDS)
+
+
+def _build_fill_notice_subscription_message(
+    *,
+    approval_key: str,
+    tr_id: str,
+    tr_key: str,
+) -> str:
+    return json.dumps(
+        {
+            "header": {
+                "approval_key": approval_key,
+                "content-type": "utf-8",
+                "custtype": KIS_WS_CUSTOMER_TYPE,
+                "tr_type": KIS_WS_SUBSCRIBE_TR_TYPE,
+            },
+            "body": {
+                "input": {
+                    "tr_id": tr_id,
+                    "tr_key": tr_key,
+                }
+            },
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _decrypt_fill_notice_payload(
+    *,
+    key: str,
+    iv: str,
+    cipher_text: str,
+) -> str:
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import unpad
+    except ModuleNotFoundError as error:
+        raise KoreaInvestmentBrokerError(
+            "pycryptodome is required to decrypt KIS websocket fill notices"
+        ) from error
+
+    cipher = AES.new(key.encode("utf-8"), AES.MODE_CBC, iv.encode("utf-8"))
+    decrypted = cipher.decrypt(base64.b64decode(cipher_text))
+    return unpad(decrypted, AES.block_size).decode("utf-8")
+
+
+def _parse_realtime_fill_notices(
+    payload: str,
+    *,
+    fallback: datetime,
+) -> tuple[ExecutionFill, ...]:
+    values = payload.split("^")
+    if not values or values == [""]:
+        return ()
+    if len(values) % len(KIS_CCNL_NOTICE_COLUMNS) != 0:
+        raise KoreaInvestmentBrokerError("unexpected realtime fill payload shape")
+
+    fills: list[ExecutionFill] = []
+    column_count = len(KIS_CCNL_NOTICE_COLUMNS)
+    for offset in range(0, len(values), column_count):
+        row_values = values[offset : offset + column_count]
+        row = dict(zip(KIS_CCNL_NOTICE_COLUMNS, row_values, strict=True))
+        fill = _parse_realtime_fill_notice_row(
+            row,
+            raw_payload="^".join(row_values),
+            fallback=fallback,
+        )
+        if fill is not None:
+            fills.append(fill)
+    return tuple(fills)
+
+
+def _parse_realtime_fill_notice_row(
+    row: Mapping[str, object],
+    *,
+    raw_payload: str,
+    fallback: datetime,
+) -> ExecutionFill | None:
+    if _optional_output_string(row.get("CNTG_YN")) != "2":
+        return None
+
+    order_id = _optional_output_string(row.get("ODER_NO")) or _optional_output_string(
+        row.get("OODER_NO")
+    )
+    if order_id is None:
+        return None
+
+    quantity = _coerce_optional_int(row.get("CNTG_QTY")) or 0
+    if quantity <= 0:
+        return None
+
+    price_raw = row.get("CNTG_UNPR")
+    if _is_blank_value(price_raw):
+        price_raw = row.get("ODER_PRC")
+    if _is_blank_value(price_raw):
+        return None
+
+    normalized_order_id = _normalize_order_identifier(order_id)
+    fill_hash = hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()[:16]
+    return ExecutionFill(
+        fill_id=f"{normalized_order_id}:ws:{fill_hash}",
+        order_id=normalized_order_id,
+        symbol=_coerce_string(row.get("STCK_SHRN_ISCD"), field_name="STCK_SHRN_ISCD"),
+        quantity=quantity,
+        price=_coerce_decimal(price_raw, field_name="CNTG_UNPR"),
+        filled_at=_parse_realtime_fill_notice_timestamp(
+            _optional_output_string(row.get("STCK_CNTG_HOUR")),
+            fallback=fallback,
+        ),
+    )
+
+
+def _parse_realtime_fill_notice_timestamp(
+    raw_time: str | None,
+    *,
+    fallback: datetime,
+) -> datetime:
+    if raw_time is None:
+        return fallback
+    normalized_time = raw_time.strip().zfill(6)
+    if len(normalized_time) != 6:
+        return fallback
+
+    base_date = fallback.astimezone(KST).date()
+    try:
+        parsed = datetime.strptime(
+            f"{base_date:%Y%m%d}{normalized_time}",
+            "%Y%m%d%H%M%S",
+        )
+    except ValueError:
+        return fallback
+    return parsed.replace(tzinfo=KST)
 
 
 def _is_blank_value(value: object) -> bool:

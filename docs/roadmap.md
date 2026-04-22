@@ -608,10 +608,27 @@ AutoTrade/
 - [x] 운영 경로에서 쓰이지 않는 수집 스캐폴딩과 호환 래퍼의 유지 여부 점검
 - [x] `*.egg-info`, `Zone.Identifier`, `__pycache__` 같은 생성물/불필요 파일 정리 및 ignore 규칙 보강
 
+#### 8.9.4 한국투자 공식 API 연동 고도화
+- 한국투자 체결 반영은 브로커 경계 안에서 WebSocket 체결통보와 REST polling fallback 을 함께 사용하도록 통합했다.
+- 다음 단계에서는 한국투자 공식 샘플 저장소(https://github.com/koreainvestment/open-trading-api)를 참조해 공식 종목 메타데이터와 endpoint 계약 검증을 운영 코드에 맞는 형태로 흡수한다.
+- 목표는 샘플 코드를 직접 가져오는 것이 아니라, 현재 브로커 추상화와 운영 경계를 유지한 채 필요한 기능만 결정적으로 재구성하는 것이다.
+
+- [x] 한국투자 WebSocket 체결통보 어댑터 설계 및 PoC 구현
+- [x] 체결통보 승인키, 구독, 암호화 payload 복호화, 재연결 정책을 브로커 경계 안으로 격리
+- [x] REST polling 기반 체결 동기화와 WebSocket 체결통보의 fallback/merge 규칙 정의
+- [ ] `stocks_info` 기반 종목코드, 섹터, ETF 메타데이터 수집 경로 설계
+- [ ] 공식 메타데이터를 현재 추천 유니버스 seed CSV 생성기로 변환하는 결정적 스크립트 추가
+- [ ] 메타데이터 갱신 주기와 diff 검토 절차를 운영 문서에 반영
+- [ ] quote, holdings, order capacity, order history 파싱 계약을 점검하는 브로커 smoke 확장
+- [ ] 한국투자 endpoint/TR 변경 감지를 위한 recorded fixture 또는 계약 테스트 보강
+
 ### 단계 완료 조건
 - [x] paper 모의체결이 주문 시각 이후 데이터만 기준으로 동작하고 관련 회귀 테스트 통과
 - [x] 부분체결 증가 이력과 알림이 실제 주문 상태 변화에 맞게 보존
 - [ ] 외부 API 장애와 상태 파일 손상 상황에서 복구 또는 안전 정지 정책이 일관되게 동작
+- [x] WebSocket 체결통보가 polling fallback 과 함께 운영 경로에 통합
+- [ ] 공식 종목 메타데이터 기반 유니버스 seed 생성 경로가 재현 가능하게 정리
+- [ ] 브로커 smoke 또는 계약 테스트가 한국투자 주요 조회 endpoint 회귀를 감지
 - [x] 실전 경로와 분리된 불필요 파일/경로 정리가 끝나고 운영 문서가 최신 구조를 반영
 
 ---

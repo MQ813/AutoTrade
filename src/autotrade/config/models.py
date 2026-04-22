@@ -19,6 +19,7 @@ class BrokerSettings:
     account: str
     environment: BrokerEnvironment = "paper"
     paper_trading_mode: PaperTradingMode = "simulate"
+    hts_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.provider.strip():
@@ -33,6 +34,8 @@ class BrokerSettings:
             raise ValueError("environment must be 'paper' or 'live'")
         if self.paper_trading_mode not in {"simulate", "broker"}:
             raise ValueError("paper_trading_mode must be 'simulate' or 'broker'")
+        if self.hts_id is not None and not self.hts_id.strip():
+            raise ValueError("hts_id must not be blank when provided")
 
 
 @dataclass(frozen=True, slots=True)
