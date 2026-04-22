@@ -1,0 +1,8 @@
+symbol,name,asset_type,sector,is_etf,is_inverse,is_leveraged,active
+005930,Samsung Electronics,Stock,Technology,0,0,0,1
+000660,SK Hynix,Stock,Technology,0,0,0,1
+035420,NAVER,Stock,Internet,0,0,0,1
+035720,Kakao,Stock,Internet,0,0,0,1
+068270,Celltrion,Stock,Healthcare,0,0,0,1
+105560,KB Financial Group,Stock,Financials,0,0,0,1
+069500,KODEX 200,ETF,Index,1,0,0,1
