@@ -207,6 +207,82 @@ def test_live_cycle_runtime_executes_sell_signal_for_existing_position(
     assert result.symbol_results[0].order.side is OrderSide.SELL
 
 
+def test_live_cycle_runtime_allows_top_up_for_existing_position_with_weight_headroom(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="100")
+    broker = ScriptedLiveBroker(
+        holdings=(
+            Holding(
+                symbol="069500",
+                quantity=1,
+                average_price=Decimal("100"),
+                current_price=Decimal("100"),
+            ),
+        ),
+        cash_available=Decimal("1000"),
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.submit_requests[0].quantity == 1
+    assert result.symbol_results[0].status == "submitted"
+    assert result.symbol_results[0].requested_quantity == 1
+    assert result.symbol_results[0].approved_quantity == 1
+
+
+def test_live_cycle_runtime_blocks_top_up_when_existing_position_reaches_weight_limit(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="100")
+    broker = ScriptedLiveBroker(
+        holdings=(
+            Holding(
+                symbol="069500",
+                quantity=3,
+                average_price=Decimal("100"),
+                current_price=Decimal("100"),
+            ),
+        ),
+        cash_available=Decimal("1000"),
+    )
+    notifier = RecordingNotifier()
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert broker.submit_requests == []
+    assert result.symbol_results[0].status == "risk_blocked"
+    assert result.symbol_results[0].requested_quantity == 0
+    assert result.symbol_results[0].approved_quantity == 0
+    assert len(notifier.notifications) == 1
+    assert notifier.notifications[0].subject == "AutoTrade risk block 069500"
+
+
 def test_live_cycle_runtime_syncs_pending_buy_without_duplicate_submit(
     tmp_path,
 ) -> None:

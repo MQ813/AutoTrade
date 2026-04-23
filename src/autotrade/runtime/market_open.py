@@ -213,12 +213,17 @@ class MarketOpenPreparationResult:
         return not self.failure_reasons
 
     @property
+    def attention_reasons(self) -> tuple[str, ...]:
+        reasons: list[str] = []
+        if self.previous_day_errors.error_entries > 0:
+            reasons.append("previous_day_errors_detected")
+        return tuple(reasons)
+
+    @property
     def failure_reasons(self) -> tuple[str, ...]:
         reasons: list[str] = []
         if not self.smoke_success:
             reasons.append("broker_smoke_failed")
-        if self.previous_day_errors.error_entries > 0:
-            reasons.append("previous_day_errors_detected")
         if self.trading_halted:
             reasons.append("trading_halted")
         if self.emergency_stop:
@@ -229,11 +234,26 @@ class MarketOpenPreparationResult:
             reasons.append("strategy_preview_failed")
         return tuple(reasons)
 
+    @property
+    def status(self) -> str:
+        if self.failure_reasons:
+            return "failure"
+        if self.attention_reasons:
+            return "attention"
+        return "success"
+
+    @property
+    def notification_status(self) -> str:
+        if self.failure_reasons:
+            return "FAILED"
+        if self.attention_reasons:
+            return "ATTENTION"
+        return "OK"
+
     def render_summary(self) -> str:
-        status = "success" if self.success else "failure"
         parts = [
             f"trading_day={self.trading_day.isoformat()}",
-            f"status={status}",
+            f"status={self.status}",
             f"strategy={self.strategy_kind}",
             f"timeframe={self.timeframe.value}",
             f"targets={','.join(self.target_symbols)}",
@@ -255,6 +275,10 @@ class MarketOpenPreparationResult:
             parts.append(
                 f"previous_error_sources={','.join(self.previous_day_errors.sources)}"
             )
+        if self.attention_reasons:
+            parts.append(
+                "attention_reasons=" + ",".join(self.attention_reasons)
+            )
         if self.failure_reasons:
             parts.append(f"failure_reasons={','.join(self.failure_reasons)}")
         return " ".join(parts)
@@ -262,7 +286,7 @@ class MarketOpenPreparationResult:
     def render_notification_body(self) -> str:
         lines = [
             f"trading_day={self.trading_day.isoformat()}",
-            f"status={'OK' if self.success else 'FAILED'}",
+            f"status={self.notification_status}",
             f"strategy={self.strategy_kind}",
             f"timeframe={self.timeframe.value}",
             f"targets={','.join(self.target_symbols)}",
@@ -273,6 +297,8 @@ class MarketOpenPreparationResult:
             f"smoke_report={self.smoke_report_path}",
             f"inspection_report={self.inspection_report_path}",
         ]
+        if self.attention_reasons:
+            lines.append("attention_reasons=" + ",".join(self.attention_reasons))
         if self.failure_reasons:
             lines.append("failure_reasons=" + ",".join(self.failure_reasons))
         lines.append("")
@@ -647,18 +673,6 @@ class MarketOpenPreparationRuntime:
                 status="buy_pending",
                 holding_quantity=holding_quantity,
             )
-        if holding_quantity > 0:
-            return StrategyPreview(
-                symbol=symbol,
-                timeframe=self.timeframe,
-                bars_loaded=len(bars),
-                preview_at=preview_bar.timestamp,
-                reference_price=quote.price,
-                signal=signal,
-                status="already_held",
-                holding_quantity=holding_quantity,
-            )
-
         try:
             capacity = self.broker_reader.get_order_capacity(symbol, quote.price)
         except Exception as exc:
@@ -699,7 +713,7 @@ class MarketOpenPreparationRuntime:
                 status="risk_blocked",
                 requested_quantity=0,
                 approved_quantity=0,
-                holding_quantity=0,
+                holding_quantity=holding_quantity,
                 reason="risk sizing produced zero quantity",
             )
 
@@ -727,7 +741,7 @@ class MarketOpenPreparationRuntime:
                 status="risk_blocked",
                 requested_quantity=requested_quantity,
                 approved_quantity=0,
-                holding_quantity=0,
+                holding_quantity=holding_quantity,
                 reason=reason,
             )
 
@@ -741,7 +755,7 @@ class MarketOpenPreparationRuntime:
             status="buy_expected",
             requested_quantity=requested_quantity,
             approved_quantity=risk_check.approved_quantity,
-            holding_quantity=0,
+            holding_quantity=holding_quantity,
         )
 
     def _load_cached_bars(self) -> dict[str, tuple[Bar, ...]]:
@@ -907,8 +921,12 @@ def _build_market_open_notification(
 ) -> NotificationMessage:
     _require_aware_datetime("created_at", created_at)
 
-    severity = AlertSeverity.INFO if result.success else AlertSeverity.ERROR
-    status = "OK" if result.success else "FAILED"
+    severity = AlertSeverity.INFO
+    if result.failure_reasons:
+        severity = AlertSeverity.ERROR
+    elif result.attention_reasons:
+        severity = AlertSeverity.WARNING
+    status = result.notification_status
     return NotificationMessage(
         created_at=created_at,
         severity=severity,

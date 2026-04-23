@@ -1,12 +1,12 @@
-# Graph Report - /home/minq/codes_wsl/AutoTrade  (2026-04-22)
+# Graph Report - /home/minq/codes_wsl/AutoTrade  (2026-04-23)
 
 ## Corpus Check
-- 114 files · ~205,288 words
+- 117 files · ~211,996 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1486 nodes · 4431 edges · 37 communities detected
-- Extraction: 64% EXTRACTED · 36% INFERRED · 0% AMBIGUOUS · INFERRED: 1591 edges (avg confidence: 0.76)
+- 1537 nodes · 4581 edges · 37 communities detected
+- Extraction: 64% EXTRACTED · 36% INFERRED · 0% AMBIGUOUS · INFERRED: 1637 edges (avg confidence: 0.76)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -54,9 +54,9 @@
 3. `Bar` - 39 edges
 4. `KoreaInvestmentBrokerTrader` - 39 edges
 5. `BrokerSettings` - 38 edges
-6. `OrderExecutionEngine` - 35 edges
-7. `RecordingTransport` - 34 edges
-8. `FileExecutionStateStore` - 32 edges
+6. `FileExecutionStateStore` - 36 edges
+7. `OrderExecutionEngine` - 35 edges
+8. `RecordingTransport` - 34 edges
 9. `KoreaInvestmentBrokerReader` - 32 edges
 10. `RiskSettings` - 30 edges
 
@@ -69,8 +69,8 @@
   /home/minq/codes_wsl/AutoTrade/src/autotrade/config/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/config/test_models.py
 - `TelegramSettings` --calls--> `test_telegram_settings_require_bot_token_and_chat_id_when_enabled()`  [INFERRED]
   /home/minq/codes_wsl/AutoTrade/src/autotrade/config/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/config/test_models.py
-- `load_seed_universe_csv()` --calls--> `load_seed_universe()`  [INFERRED]
-  /home/minq/codes_wsl/AutoTrade/src/autotrade/recommendation/universe.py → /home/minq/codes_wsl/AutoTrade/src/autotrade/recommendation/service.py
+- `_KisDownloadSource` --uses--> `SeedUniverseEntry`  [INFERRED]
+  /home/minq/codes_wsl/AutoTrade/src/autotrade/recommendation/kis_seed_universe.py → /home/minq/codes_wsl/AutoTrade/src/autotrade/recommendation/models.py
 
 ## Communities
 
@@ -80,83 +80,83 @@ Nodes (81): BrokerNormalizationError, Raised when broker payloads cannot be norm
 
 ### Community 1 - "Community 1"
 Cohesion: 0.04
-Nodes (105): _apply_inspection_updates(), _build_failure_inspection_report(), _build_market_close_inspection_report(), build_market_close_job(), _build_next_day_preparation(), _daily_fills(), _daily_order_snapshots(), _market_close_detail() (+97 more)
+Nodes (108): SeedUniverseAssetScope, _apply_inspection_updates(), _build_failure_inspection_report(), _build_market_close_inspection_report(), build_market_close_job(), _build_next_day_preparation(), _daily_fills(), _daily_order_snapshots() (+100 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.04
-Nodes (75): _advance_market_if_supported(), _build_cancel_request_id(), build_live_cycle_job(), _build_request_id(), _build_risk_block_notification(), _calculate_current_equity(), _count_orders_submitted_today(), _count_unfilled_orders() (+67 more)
+Cohesion: 0.05
+Nodes (75): should_cancel_unfilled_orders(), _advance_market_if_supported(), _build_cancel_request_id(), build_live_cycle_job(), _build_request_id(), _build_risk_block_notification(), _calculate_current_equity(), _count_orders_submitted_today() (+67 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.04
 Nodes (73): _average_traded_value(), _build_metrics(), build_recommendation_report(), _calculate_return(), _percentile_score(), _rank_candidates(), _realized_volatility(), _resolve_as_of() (+65 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.04
-Nodes (67): KrxRegularSessionCalendar, build_market_open_preparation_job(), build_weekly_review_report(), build_market_close_job(), build_scheduled_cycle_job(), build_safe_stop_notification(), _compose_safe_stop_detail(), _failed_jobs_reason() (+59 more)
+Cohesion: 0.05
+Nodes (61): apply_buy_fill(), apply_sell_fill(), BacktestPortfolioState, BacktestResult, BacktestTrade, build_portfolio_snapshot(), _buy_execution_price(), _calculate_buy_quantity() (+53 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.04
-Nodes (64): apply_buy_fill(), apply_sell_fill(), BacktestPortfolioState, BacktestResult, BacktestTrade, build_portfolio_snapshot(), _buy_execution_price(), _calculate_buy_quantity() (+56 more)
+Cohesion: 0.05
+Nodes (63): KrxRegularSessionCalendar, _safe_stop_additional_job_results(), build_weekly_review_report(), build_safe_stop_notification(), _compose_safe_stop_detail(), _failed_jobs_reason(), _require_aware_datetime(), _require_non_blank_text() (+55 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.05
-Nodes (82): main(), Raised when required settings are missing or invalid., AppSettings, BrokerSettings, TelegramSettings, _approve_symbols(), _build_and_write_weekly_recommendation(), _build_and_write_weekly_review() (+74 more)
+Cohesion: 0.06
+Nodes (62): _apply_fills_to_order(), _deserialize_fill(), _deserialize_order(), _deserialize_request(), _deserialize_snapshot(), _deserialize_tracked_request(), DuplicateExecutionRequestError, ExecutionEngineError (+54 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.04
-Nodes (51): BarCollectionService, BarIntegrityChecker, BarSource, BarStore, Read-only contract for loading a target universe., Read-only contract for loading OHLC bars., Write-only contract for persisting OHLC bars., Contract for validating a bar series before persistence. (+43 more)
+Cohesion: 0.05
+Nodes (78): main(), Raised when required settings are missing or invalid., AppSettings, BrokerSettings, TelegramSettings, _approve_symbols(), _build_and_write_weekly_recommendation(), _build_and_write_weekly_review() (+70 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.07
-Nodes (58): _apply_fills_to_order(), _deserialize_fill(), _deserialize_order(), _deserialize_request(), _deserialize_snapshot(), _deserialize_tracked_request(), DuplicateExecutionRequestError, ExecutionEngineError (+50 more)
+Cohesion: 0.09
+Nodes (63): HttpRequest, HttpResponse, KoreaInvestmentBrokerReader, KoreaInvestmentBrokerTrader, _split_account(), _urllib_transport(), ExecutionFill, ExecutionOrder (+55 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.09
-Nodes (61): HttpRequest, HttpResponse, KoreaInvestmentBarSource, KoreaInvestmentBrokerReader, KoreaInvestmentBrokerTrader, _split_account(), ExecutionFill, ExecutionOrder (+53 more)
+Cohesion: 0.05
+Nodes (44): _build_market_open_notification(), build_market_open_preparation_job(), _build_pre_market_items(), _build_preview_bar(), _build_preview_risk_account_snapshot(), _calculate_current_equity(), _collect_previous_day_errors(), CollectStrategyBars (+36 more)
 
 ### Community 10 - "Community 10"
+Cohesion: 0.05
+Nodes (36): BarCollectionService, BarIntegrityChecker, BarSource, BarStore, Read-only contract for loading a target universe., Read-only contract for loading OHLC bars., Write-only contract for persisting OHLC bars., Contract for validating a bar series before persistence. (+28 more)
+
+### Community 11 - "Community 11"
 Cohesion: 0.07
 Nodes (30): BrokerReader, BrokerTrader, from_snapshot(), PaperBroker, PaperBrokerSnapshot, _PaperPosition, _require_non_negative_decimal(), _require_positive_int() (+22 more)
 
-### Community 11 - "Community 11"
-Cohesion: 0.1
-Nodes (30): CompositeNotifier, _decode_telegram_payload(), _extract_retry_after_seconds(), _format_telegram_messages(), _network_retry_delay_seconds(), NotificationDeliveryError, _retry_delay_seconds(), _split_long_line() (+22 more)
-
 ### Community 12 - "Community 12"
-Cohesion: 0.16
-Nodes (37): _calculate_drawdown(), _calculate_loss_amount(), calculate_max_buy_quantity(), _calculate_max_buy_quantity_by_cash(), _calculate_max_buy_quantity_by_operating_capital(), _calculate_max_buy_quantity_by_weight(), _calculate_projected_position_weight(), _count_open_holdings() (+29 more)
+Cohesion: 0.1
+Nodes (36): _make_bar(), _make_bars(), test_daily_trend_following_generates_buy_signal_with_reason(), test_strategy_rejects_gapped_bar_series(), test_strategy_rejects_invalid_series_structure(), test_strategy_returns_hold_for_insufficient_history(), test_thirty_minute_trend_generates_sell_signal_with_reason(), _make_bar() (+28 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.09
-Nodes (20): _build_market_open_notification(), _build_pre_market_items(), _build_preview_bar(), _build_preview_risk_account_snapshot(), _calculate_current_equity(), _collect_previous_day_errors(), _count_orders_submitted_today(), _count_unfilled_orders() (+12 more)
+Cohesion: 0.1
+Nodes (38): main(), build_seed_universe_from_kis_files(), diff_seed_universe(), _download_and_extract_zip_member(), download_kis_stocks_info_files(), _is_inverse_name(), _is_leveraged_name(), _is_true_flag() (+30 more)
 
 ### Community 14 - "Community 14"
+Cohesion: 0.11
+Nodes (29): CompositeNotifier, _decode_telegram_payload(), _extract_retry_after_seconds(), _format_telegram_messages(), _network_retry_delay_seconds(), NotificationDeliveryError, _retry_delay_seconds(), _split_long_line() (+21 more)
+
+### Community 15 - "Community 15"
+Cohesion: 0.16
+Nodes (36): _calculate_drawdown(), _calculate_loss_amount(), calculate_max_buy_quantity(), _calculate_max_buy_quantity_by_cash(), _calculate_max_buy_quantity_by_operating_capital(), _calculate_max_buy_quantity_by_weight(), _calculate_projected_position_weight(), _count_open_holdings() (+28 more)
+
+### Community 16 - "Community 16"
 Cohesion: 0.16
 Nodes (33): ConfigError, _load_risk_settings(), load_settings(), load_telegram_settings(), _parse_bool_setting(), _parse_broker_environment(), _parse_decimal_setting(), _parse_float_setting() (+25 more)
 
-### Community 15 - "Community 15"
+### Community 17 - "Community 17"
 Cohesion: 0.14
 Nodes (28): BacktestConfig, BacktestCostModel, BacktestEngine, BacktestOverfitCheck, BacktestPerformanceSummary, BacktestReport, build_backtest_report(), _build_overfit_check() (+20 more)
 
-### Community 16 - "Community 16"
+### Community 18 - "Community 18"
 Cohesion: 0.1
 Nodes (26): collect_holiday_dates(), extract_holiday_dates_from_xls(), extract_holiday_dates_from_xls_bytes(), main(), render_holiday_module(), write_holiday_module(), path(), _load_daily_inspection_module() (+18 more)
 
-### Community 17 - "Community 17"
+### Community 19 - "Community 19"
 Cohesion: 0.14
 Nodes (22): ApprovedSymbolsArtifacts, deserialize_approved_symbols_record(), load_approved_symbols_record(), load_latest_approved_symbols(), _require_mapping(), _require_text(), serialize_approved_symbols_record(), write_approved_symbols() (+14 more)
 
-### Community 18 - "Community 18"
-Cohesion: 0.19
-Nodes (22): _make_bar(), test_normalize_symbol_rejects_blank_values(), test_normalize_symbol_strips_and_uppercases(), test_normalize_symbols_preserves_order(), test_normalize_symbols_rejects_duplicates_after_normalization(), test_validate_bar_series_accepts_contiguous_series(), test_validate_bar_series_allows_session_boundary_gap(), test_validate_bar_series_allows_weekend_boundary_gap() (+14 more)
-
-### Community 19 - "Community 19"
+### Community 20 - "Community 20"
 Cohesion: 0.15
 Nodes (14): _add_runtime_arguments(), _build_parser(), main(), main_daily_inspection_compat(), main_live_cycle_compat(), main_weekly_review_compat(), main(), main() (+6 more)
-
-### Community 20 - "Community 20"
-Cohesion: 0.2
-Nodes (14): _make_bar(), _make_bars(), test_daily_trend_following_generates_buy_signal_with_reason(), test_strategy_rejects_gapped_bar_series(), test_strategy_rejects_invalid_series_structure(), test_strategy_returns_hold_for_insufficient_history(), test_thirty_minute_trend_generates_sell_signal_with_reason(), _build_signal() (+6 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 1.0
@@ -261,14 +261,14 @@ Nodes (0):
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Bar` connect `Community 7` to `Community 0`, `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 5`, `Community 6`, `Community 9`, `Community 10`, `Community 13`, `Community 15`, `Community 18`, `Community 20`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
-- **Why does `BrokerSettings` connect `Community 6` to `Community 0`, `Community 1`, `Community 2`, `Community 9`, `Community 14`, `Community 16`?**
-  _High betweenness centrality (0.048) - this node is a cross-community bridge._
-- **Why does `BrokerNormalizationError` connect `Community 0` to `Community 9`, `Community 5`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
-- **Are the 147 inferred relationships involving `ValueError` (e.g. with `.__post_init__()` and `.__post_init__()`) actually correct?**
-  _`ValueError` has 147 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `Bar` connect `Community 10` to `Community 0`, `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 5`, `Community 7`, `Community 8`, `Community 9`, `Community 11`, `Community 12`, `Community 17`?**
+  _High betweenness centrality (0.052) - this node is a cross-community bridge._
+- **Why does `path()` connect `Community 18` to `Community 0`, `Community 3`, `Community 6`, `Community 7`, `Community 13`, `Community 16`?**
+  _High betweenness centrality (0.049) - this node is a cross-community bridge._
+- **Why does `FileExecutionStateStore` connect `Community 2` to `Community 1`, `Community 9`, `Community 6`, `Community 7`?**
+  _High betweenness centrality (0.046) - this node is a cross-community bridge._
+- **Are the 152 inferred relationships involving `ValueError` (e.g. with `.__post_init__()` and `.__post_init__()`) actually correct?**
+  _`ValueError` has 152 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 22 inferred relationships involving `PaperBroker` (e.g. with `ReplaySessionSnapshot` and `ReplayLogEntry`) actually correct?**
   _`PaperBroker` has 22 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 6 inferred relationships involving `KoreaInvestmentBrokerError` (e.g. with `BrokerNormalizationError` and `BrokerReader`) actually correct?**

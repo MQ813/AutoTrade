@@ -136,6 +136,95 @@ def test_market_open_preparation_job_raises_after_writing_reports_on_failed_chec
     )
 
 
+def test_market_open_preparation_job_reports_attention_for_previous_day_errors(
+    tmp_path,
+) -> None:
+    generated_at = datetime(2026, 4, 14, 8, 0, tzinfo=KST)
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "operations_20260413_153000_000000.log").write_text(
+        (
+            "timestamp=2026-04-13T15:30:00+09:00 level=error "
+            "source=live_cycle message=boom\n"
+        ),
+        encoding="utf-8",
+    )
+    settings = _settings(log_dir)
+    notifier = RecordingNotifier()
+    runtime = MarketOpenPreparationRuntime(
+        settings=settings,
+        strategy_kind="30m_low_frequency_trend",
+        timeframe=Timeframe.MINUTE_30,
+        bar_root=log_dir / "bars",
+        broker_reader=StubBrokerReader(),
+        notifier=notifier,
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        collect_strategy_bars=_write_strategy_bars,
+        smoke_runner=lambda resolved_settings, timestamp: _successful_smoke_report(
+            resolved_settings,
+            timestamp=timestamp,
+        ),
+    )
+    job = runtime.build_job()
+
+    summary = job.handler(
+        JobContext(
+            phase=MarketSessionPhase.MARKET_OPEN,
+            trading_day=generated_at.date(),
+            scheduled_at=generated_at,
+            triggered_at=generated_at,
+        )
+    )
+
+    assert "status=attention" in summary
+    assert "attention_reasons=previous_day_errors_detected" in summary
+    inspection_paths = tuple(sorted(log_dir.glob("daily_inspection_*.txt")))
+    assert len(inspection_paths) == 1
+    inspection_text = inspection_paths[0].read_text(encoding="utf-8")
+    assert "item_status=failed item_label=전일 로그 이상 여부 확인" in inspection_text
+    assert len(notifier.notifications) == 1
+    assert notifier.notifications[0].subject == (
+        "AutoTrade market open prep 2026-04-14 [ATTENTION]"
+    )
+
+
+def test_market_open_preparation_runtime_previews_top_up_for_existing_position_with_weight_headroom(
+    tmp_path,
+) -> None:
+    generated_at = datetime(2026, 4, 14, 8, 0, tzinfo=KST)
+    log_dir = tmp_path / "logs"
+    settings = _settings(log_dir)
+    runtime = MarketOpenPreparationRuntime(
+        settings=settings,
+        strategy_kind="30m_low_frequency_trend",
+        timeframe=Timeframe.MINUTE_30,
+        bar_root=log_dir / "bars",
+        broker_reader=StubBrokerReader(
+            holdings=(
+                Holding(
+                    symbol="069500",
+                    quantity=1,
+                    average_price=Decimal("130"),
+                    current_price=Decimal("130"),
+                ),
+            ),
+        ),
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        collect_strategy_bars=_write_strategy_bars,
+        smoke_runner=lambda resolved_settings, timestamp: _successful_smoke_report(
+            resolved_settings,
+            timestamp=timestamp,
+        ),
+    )
+
+    result = runtime.run(timestamp=generated_at)
+
+    assert result.strategy_previews[0].status == "buy_expected"
+    assert result.strategy_previews[0].approved_quantity > 0
+    assert result.strategy_previews[0].holding_quantity == 1
+
+
 @dataclass(slots=True)
 class RecordingNotifier:
     notifications: list[NotificationMessage]
@@ -148,15 +237,26 @@ class RecordingNotifier:
 
 
 class StubBrokerReader:
+    def __init__(
+        self,
+        *,
+        holdings: tuple[Holding, ...] = (),
+        cash_available: Decimal = Decimal("86415"),
+        quote_price: Decimal = Decimal("130"),
+    ) -> None:
+        self._holdings = holdings
+        self._cash_available = cash_available
+        self._quote_price = quote_price
+
     def get_quote(self, symbol: str) -> Quote:
         return Quote(
             symbol=symbol,
-            price=Decimal("130"),
+            price=self._quote_price,
             as_of=datetime(2026, 4, 14, 8, 0, tzinfo=KST),
         )
 
     def get_holdings(self) -> tuple[Holding, ...]:
-        return ()
+        return self._holdings
 
     def get_order_capacity(
         self,
@@ -167,7 +267,7 @@ class StubBrokerReader:
             symbol=symbol,
             order_price=order_price,
             max_orderable_quantity=999,
-            cash_available=Decimal("86415"),
+            cash_available=self._cash_available,
         )
 
 

@@ -437,22 +437,6 @@ class LiveCycleRuntime:
                 notifications=tuple([*published_notifications, *notifications]),
             )
 
-        if any(
-            holding.symbol == symbol and holding.quantity > 0 for holding in holdings
-        ):
-            logger.info(
-                "이미 보유 중인 종목이라 신규 매수를 건너뜁니다. symbol=%s", symbol
-            )
-            return LiveCycleSymbolResult(
-                symbol=symbol,
-                timeframe=self.timeframe,
-                bars_loaded=len(bars),
-                signal=signal,
-                status="already_held",
-                fills=tuple(published_fills),
-                notifications=tuple(published_notifications),
-            )
-
         open_buy_order = _find_open_order(
             existing_snapshots,
             symbol=symbol,
