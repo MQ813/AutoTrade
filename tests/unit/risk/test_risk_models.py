@@ -11,6 +11,7 @@ def test_risk_settings_accepts_defaults() -> None:
     settings = RiskSettings()
 
     assert settings.max_position_weight == Decimal("0.2")
+    assert settings.entry_max_position_weight_per_order == Decimal("0.05")
     assert settings.max_concurrent_holdings == 3
     assert settings.max_loss is None
     assert settings.max_drawdown is None
@@ -30,6 +31,14 @@ def test_risk_settings_accepts_defaults() -> None:
         (
             {"max_position_weight": Decimal("1.1")},
             "max_position_weight",
+        ),
+        (
+            {"entry_max_position_weight_per_order": Decimal("0")},
+            "entry_max_position_weight_per_order",
+        ),
+        (
+            {"entry_max_position_weight_per_order": Decimal("1.1")},
+            "entry_max_position_weight_per_order",
         ),
         (
             {"max_concurrent_holdings": 0},
@@ -59,3 +68,12 @@ def test_risk_settings_rejects_invalid_values(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         RiskSettings(**kwargs)
+
+
+def test_entry_max_position_weight_per_order_is_independent_of_total_cap() -> None:
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.2"),
+        entry_max_position_weight_per_order=Decimal("0.8"),
+    )
+
+    assert settings.entry_max_position_weight_per_order == Decimal("0.8")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -30,6 +30,7 @@ def test_load_settings_returns_app_settings_with_default_provider(
     assert settings.broker.hts_id is None
     assert settings.target_symbols == ("069500", "357870", "114800")
     assert settings.log_dir == tmp_path / "logs"
+    assert settings.risk.entry_max_position_weight_per_order == Decimal("0.05")
     assert settings.telegram.enabled is False
     assert settings.telegram.chat_id is None
 
@@ -161,6 +162,7 @@ def test_load_settings_reads_risk_settings(tmp_path: Path) -> None:
         _make_env(
             tmp_path,
             AUTOTRADE_RISK_MAX_POSITION_WEIGHT="0.35",
+            AUTOTRADE_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER="0.08",
             AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS="2",
             AUTOTRADE_RISK_MAX_LOSS="150000",
             AUTOTRADE_RISK_MAX_DRAWDOWN="0.12",
@@ -173,6 +175,7 @@ def test_load_settings_reads_risk_settings(tmp_path: Path) -> None:
     )
 
     assert settings.risk.max_position_weight == Decimal("0.35")
+    assert settings.risk.entry_max_position_weight_per_order == Decimal("0.08")
     assert settings.risk.max_concurrent_holdings == 2
     assert settings.risk.max_loss == Decimal("150000")
     assert settings.risk.max_drawdown == Decimal("0.12")
@@ -242,6 +245,9 @@ def test_load_settings_rejects_invalid_paper_trading_mode(tmp_path: Path) -> Non
     ("key", "value"),
     [
         ("AUTOTRADE_RISK_MAX_POSITION_WEIGHT", "abc"),
+        ("AUTOTRADE_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER", "abc"),
+        ("AUTOTRADE_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER", "0"),
+        ("AUTOTRADE_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER", "1.1"),
         ("AUTOTRADE_RISK_MAX_CONCURRENT_HOLDINGS", "1.5"),
         ("AUTOTRADE_RISK_MAX_DRAWDOWN", "abc"),
         ("AUTOTRADE_RISK_MAX_ORDERS_PER_DAY", "1.5"),

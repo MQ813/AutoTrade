@@ -15,6 +15,7 @@ from autotrade.risk import should_cancel_unfilled_orders
 def test_evaluate_buy_order_allows_order_within_limits() -> None:
     settings = RiskSettings(
         max_position_weight=Decimal("0.3"),
+        entry_max_position_weight_per_order=Decimal("0.3"),
         max_concurrent_holdings=3,
         max_loss=Decimal("200"),
         max_drawdown=Decimal("0.15"),
@@ -54,7 +55,10 @@ def test_evaluate_buy_order_allows_order_within_limits() -> None:
 def test_evaluate_buy_order_caps_quantity_when_position_weight_would_be_exceeded() -> (
     None
 ):
-    settings = RiskSettings(max_position_weight=Decimal("0.2"))
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.2"),
+        entry_max_position_weight_per_order=Decimal("1"),
+    )
     snapshot = RiskAccountSnapshot(
         holdings=(),
         cash_available=Decimal("1000"),
@@ -77,7 +81,10 @@ def test_evaluate_buy_order_caps_quantity_when_position_weight_would_be_exceeded
 
 
 def test_evaluate_buy_order_caps_quantity_when_cash_is_insufficient() -> None:
-    settings = RiskSettings(max_position_weight=Decimal("0.8"))
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.8"),
+        entry_max_position_weight_per_order=Decimal("1"),
+    )
     snapshot = RiskAccountSnapshot(
         holdings=(),
         cash_available=Decimal("120"),
@@ -95,6 +102,33 @@ def test_evaluate_buy_order_caps_quantity_when_cash_is_insufficient() -> None:
     assert result.approved_quantity == 2
     assert [violation.code for violation in result.violations] == [
         RiskViolationCode.INSUFFICIENT_CASH,
+    ]
+    assert result.should_halt_trading is False
+
+
+def test_evaluate_buy_order_caps_quantity_when_entry_order_weight_is_exceeded() -> None:
+    settings = RiskSettings(
+        max_position_weight=Decimal("1"),
+        entry_max_position_weight_per_order=Decimal("0.05"),
+    )
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("1000"),
+        total_equity=Decimal("1000"),
+    )
+    order = ProposedBuyOrder(
+        symbol="114800",
+        price=Decimal("20"),
+        quantity=4,
+    )
+
+    result = evaluate_buy_order(settings, snapshot, order)
+
+    assert result.allowed is False
+    assert result.approved_quantity == 2
+    assert result.projected_position_weight == Decimal("0.08")
+    assert [violation.code for violation in result.violations] == [
+        RiskViolationCode.ENTRY_MAX_POSITION_WEIGHT_PER_ORDER_EXCEEDED,
     ]
     assert result.should_halt_trading is False
 
@@ -321,7 +355,10 @@ def test_evaluate_buy_order_blocks_when_emergency_stop_is_active() -> None:
 
 
 def test_calculate_max_buy_quantity_uses_existing_symbol_exposure() -> None:
-    settings = RiskSettings(max_position_weight=Decimal("0.3"))
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.3"),
+        entry_max_position_weight_per_order=Decimal("1"),
+    )
     snapshot = RiskAccountSnapshot(
         holdings=(
             Holding(
@@ -345,7 +382,10 @@ def test_calculate_max_buy_quantity_uses_existing_symbol_exposure() -> None:
 
 
 def test_calculate_max_buy_quantity_respects_cash_limit() -> None:
-    settings = RiskSettings(max_position_weight=Decimal("0.8"))
+    settings = RiskSettings(
+        max_position_weight=Decimal("0.8"),
+        entry_max_position_weight_per_order=Decimal("1"),
+    )
     snapshot = RiskAccountSnapshot(
         holdings=(),
         cash_available=Decimal("120"),
@@ -362,9 +402,31 @@ def test_calculate_max_buy_quantity_respects_cash_limit() -> None:
     assert max_quantity == 2
 
 
+def test_calculate_max_buy_quantity_respects_entry_order_weight_limit() -> None:
+    settings = RiskSettings(
+        max_position_weight=Decimal("1"),
+        entry_max_position_weight_per_order=Decimal("0.05"),
+    )
+    snapshot = RiskAccountSnapshot(
+        holdings=(),
+        cash_available=Decimal("1000"),
+        total_equity=Decimal("1000"),
+    )
+
+    max_quantity = calculate_max_buy_quantity(
+        settings=settings,
+        snapshot=snapshot,
+        symbol="114800",
+        order_price=Decimal("30"),
+    )
+
+    assert max_quantity == 1
+
+
 def test_evaluate_buy_order_caps_quantity_when_operating_capital_is_limited() -> None:
     settings = RiskSettings(
         max_position_weight=Decimal("0.9"),
+        entry_max_position_weight_per_order=Decimal("1"),
         max_operating_capital=Decimal("300"),
     )
     snapshot = RiskAccountSnapshot(
@@ -397,6 +459,7 @@ def test_evaluate_buy_order_caps_quantity_when_operating_capital_is_limited() ->
 def test_calculate_max_buy_quantity_respects_operating_capital_limit() -> None:
     settings = RiskSettings(
         max_position_weight=Decimal("0.9"),
+        entry_max_position_weight_per_order=Decimal("1"),
         max_operating_capital=Decimal("300"),
     )
     snapshot = RiskAccountSnapshot(

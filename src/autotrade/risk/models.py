@@ -38,6 +38,7 @@ def _require_non_negative_int(field_name: str, value: int) -> None:
 @dataclass(frozen=True, slots=True)
 class RiskSettings:
     max_position_weight: Decimal = Decimal("0.2")
+    entry_max_position_weight_per_order: Decimal = Decimal("0.05")
     max_concurrent_holdings: int = 3
     max_loss: Decimal | None = None
     max_drawdown: Decimal | None = None
@@ -51,6 +52,13 @@ class RiskSettings:
         if self.max_position_weight <= ZERO or self.max_position_weight > ONE:
             raise ValueError(
                 "max_position_weight must be between 0 and 1 inclusive",
+            )
+        if (
+            self.entry_max_position_weight_per_order <= ZERO
+            or self.entry_max_position_weight_per_order > ONE
+        ):
+            raise ValueError(
+                "entry_max_position_weight_per_order must be between 0 and 1 inclusive",
             )
         _require_positive_int(
             "max_concurrent_holdings",
@@ -126,6 +134,9 @@ class RiskViolationCode(StrEnum):
     OPERATING_CAPITAL_LIMIT_EXCEEDED = "operating_capital_limit_exceeded"
     MAX_CONCURRENT_HOLDINGS_EXCEEDED = "max_concurrent_holdings_exceeded"
     MAX_POSITION_WEIGHT_EXCEEDED = "max_position_weight_exceeded"
+    ENTRY_MAX_POSITION_WEIGHT_PER_ORDER_EXCEEDED = (
+        "entry_max_position_weight_per_order_exceeded"
+    )
     INSUFFICIENT_CASH = "insufficient_cash"
 
 

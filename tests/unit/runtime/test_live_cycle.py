@@ -224,7 +224,10 @@ def test_live_cycle_runtime_allows_top_up_for_existing_position_with_weight_head
         cash_available=Decimal("1000"),
     )
     runtime = LiveCycleRuntime(
-        settings=_settings(log_dir),
+        settings=_settings(
+            log_dir,
+            risk=RiskSettings(entry_max_position_weight_per_order=Decimal("0.2")),
+        ),
         strategy=FixedStrategy(SignalAction.BUY),
         timeframe=Timeframe.MINUTE_30,
         bar_source=StaticBarSource({"069500": (bar,)}),
@@ -242,6 +245,39 @@ def test_live_cycle_runtime_allows_top_up_for_existing_position_with_weight_head
     assert result.symbol_results[0].status == "submitted"
     assert result.symbol_results[0].requested_quantity == 1
     assert result.symbol_results[0].approved_quantity == 1
+
+
+def test_live_cycle_runtime_caps_buy_quantity_by_entry_order_weight(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="20")
+    broker = ScriptedLiveBroker(cash_available=Decimal("1000"))
+    runtime = LiveCycleRuntime(
+        settings=_settings(
+            log_dir,
+            risk=RiskSettings(
+                max_position_weight=Decimal("1"),
+                entry_max_position_weight_per_order=Decimal("0.05"),
+            ),
+        ),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.submit_requests[0].quantity == 2
+    assert result.symbol_results[0].status == "submitted"
+    assert result.symbol_results[0].requested_quantity == 2
+    assert result.symbol_results[0].approved_quantity == 2
 
 
 def test_live_cycle_runtime_blocks_top_up_when_existing_position_reaches_weight_limit(
@@ -559,7 +595,10 @@ def test_live_cycle_runtime_applies_submitted_today_order_limit(
     runtime = LiveCycleRuntime(
         settings=_settings(
             log_dir,
-            risk=RiskSettings(max_orders_per_day=1),
+            risk=RiskSettings(
+                entry_max_position_weight_per_order=Decimal("0.2"),
+                max_orders_per_day=1,
+            ),
         ),
         strategy=FixedStrategy(SignalAction.BUY),
         timeframe=Timeframe.MINUTE_30,
@@ -589,6 +628,7 @@ def test_live_cycle_runtime_persists_intraday_loss_and_drawdown_baseline(
     settings = _settings(
         log_dir,
         risk=RiskSettings(
+            entry_max_position_weight_per_order=Decimal("0.2"),
             max_loss=Decimal("10"),
             max_drawdown=Decimal("0.01"),
         ),

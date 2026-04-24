@@ -21,6 +21,7 @@ DEFAULT_BROKER_ENVIRONMENT = "paper"
 DEFAULT_BROKER_PAPER_TRADING_MODE = "simulate"
 TARGET_SYMBOLS_ENV_KEY = "AUTOTRADE_TARGET_SYMBOLS"
 DEFAULT_RISK_MAX_POSITION_WEIGHT = "0.2"
+DEFAULT_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER = "0.05"
 DEFAULT_RISK_MAX_CONCURRENT_HOLDINGS = "3"
 DEFAULT_RISK_TRADING_HALTED = "false"
 DEFAULT_RISK_EMERGENCY_STOP = "false"
@@ -222,6 +223,14 @@ def _load_risk_settings(environment: Mapping[str, str]) -> RiskSettings:
                 default=DEFAULT_RISK_MAX_POSITION_WEIGHT,
             ),
             key="AUTOTRADE_RISK_MAX_POSITION_WEIGHT",
+        ),
+        entry_max_position_weight_per_order=_parse_decimal_setting(
+            _read_optional_value(
+                environment,
+                "AUTOTRADE_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER",
+                default=DEFAULT_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER,
+            ),
+            key="AUTOTRADE_ENTRY_MAX_POSITION_WEIGHT_PER_ORDER",
         ),
         max_concurrent_holdings=_parse_int_setting(
             _read_optional_value(
