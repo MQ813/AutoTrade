@@ -1,3 +1,4 @@
+AutoTrade 일지.docx
 .codex
 __pycache__/
 *.py[cod]
@@ -12,5 +13,8 @@ src/*.egg-info/
 ~$*.docx
 test_paper.sh
 test_paper.log
-logs/paper_*/
-.env
+logs/*
+.env*
+graphify-out/cache
+universe/
+tools/kis_stocks_info/raw/

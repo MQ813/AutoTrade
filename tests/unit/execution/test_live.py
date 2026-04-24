@@ -171,6 +171,25 @@ def test_sync_fills_merges_unique_fills_and_updates_order_status() -> None:
     assert len(filled.fills) == 2
 
 
+def test_sync_fills_passes_current_order_to_order_aware_trader() -> None:
+    trader = OrderAwareScriptedBrokerTrader(
+        submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))],
+        order_fill_outcomes=[
+            (_fill("fill-1", quantity=10, filled_at="2026-04-13T09:01:00+09:00"),)
+        ],
+    )
+    engine = OrderExecutionEngine(trader)
+
+    engine.submit_order(_order_request())
+    synced = engine.sync_fills("order-1")
+
+    assert synced.order.status is OrderStatus.FILLED
+    assert trader.order_fill_requests == [
+        _order(order_id="order-1", limit_price=Decimal("10000"))
+    ]
+    assert trader.fill_requests == []
+
+
 def test_sync_fills_materializes_increment_from_cumulative_fill_snapshots() -> None:
     trader = ScriptedBrokerTrader(
         submit_outcomes=[_order(order_id="order-1", limit_price=Decimal("10000"))],
@@ -386,6 +405,30 @@ class ScriptedBrokerTrader:
     def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
         self.fill_requests.append(order_id)
         return _pop_outcome(self._fill_outcomes)
+
+
+class OrderAwareScriptedBrokerTrader(ScriptedBrokerTrader):
+    def __init__(
+        self,
+        *,
+        submit_outcomes: Sequence[ExecutionOrder | BaseException] = (),
+        amend_outcomes: Sequence[ExecutionOrder | BaseException] = (),
+        cancel_outcomes: Sequence[ExecutionOrder | BaseException] = (),
+        fill_outcomes: Sequence[tuple[ExecutionFill, ...] | BaseException] = (),
+        order_fill_outcomes: Sequence[tuple[ExecutionFill, ...] | BaseException] = (),
+    ) -> None:
+        super().__init__(
+            submit_outcomes=submit_outcomes,
+            amend_outcomes=amend_outcomes,
+            cancel_outcomes=cancel_outcomes,
+            fill_outcomes=fill_outcomes,
+        )
+        self._order_fill_outcomes = list(order_fill_outcomes)
+        self.order_fill_requests: list[ExecutionOrder] = []
+
+    def get_fills_for_order(self, order: ExecutionOrder) -> tuple[ExecutionFill, ...]:
+        self.order_fill_requests.append(order)
+        return _pop_outcome(self._order_fill_outcomes)
 
 
 def _pop_outcome(outcomes: list[_T | BaseException]) -> _T:

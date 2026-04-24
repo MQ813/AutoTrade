@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import date
 from datetime import datetime
 from decimal import Decimal
@@ -16,8 +17,10 @@ from autotrade.config import BrokerSettings
 from autotrade.config import TelegramSettings
 from autotrade.data import Bar
 from autotrade.data import CsvBarStore
+from autotrade.data import KrxRegularSessionCalendar
 from autotrade.data import KST
 from autotrade.data import Timeframe
+from autotrade.recommendation import RecommendationPolicy
 from autotrade.report import NotificationMessage
 from autotrade.runtime.market_close import MarketCloseRuntime
 from autotrade.scheduler import JobContext
@@ -215,6 +218,186 @@ def test_handle_weekly_recommendation_returns_operational_exit_code_on_runtime_e
     )
 
     assert result == operations.EXIT_CODE_OPERATION_FAILED
+
+
+def test_handle_collect_daily_bars_uses_default_bar_root_and_prints_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = _settings(tmp_path / "logs")
+    universe_file = tmp_path / "universe.csv"
+    captured: dict[str, object] = {}
+
+    def fake_collect_daily_bars_for_universe(
+        *,
+        settings: AppSettings,
+        universe_file: Path,
+        bar_root: Path,
+        generated_at: datetime,
+    ) -> Path:
+        captured["settings"] = settings
+        captured["universe_file"] = universe_file
+        captured["bar_root"] = bar_root
+        captured["generated_at"] = generated_at
+        return bar_root / "1d"
+
+    monkeypatch.setattr(
+        operations,
+        "_load_runtime_settings",
+        lambda env_file: settings,
+    )
+    monkeypatch.setattr(
+        operations,
+        "_collect_daily_bars_for_universe",
+        fake_collect_daily_bars_for_universe,
+    )
+
+    result = operations._handle_collect_daily_bars(
+        argparse.Namespace(
+            env_file=tmp_path / ".env",
+            universe_file=universe_file,
+            bar_root=None,
+        )
+    )
+
+    assert result == operations.EXIT_CODE_SUCCESS
+    assert captured["settings"] is settings
+    assert captured["universe_file"] == universe_file
+    assert captured["bar_root"] == settings.log_dir / "bars"
+    assert isinstance(captured["generated_at"], datetime)
+    assert capsys.readouterr().out == f"{settings.log_dir / 'bars' / '1d'}\n"
+
+
+def test_require_log_dir_expands_environment_variables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PWD", str(tmp_path))
+
+    log_dir = operations._require_log_dir({"AUTOTRADE_LOG_DIR": "$PWD/logs"})
+
+    assert log_dir == tmp_path / "logs"
+
+
+def test_build_weekly_recommendation_uses_latest_cached_daily_bar_as_as_of(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar_root = log_dir / "bars"
+    universe_file = tmp_path / "universe.csv"
+    universe_file.write_text(
+        "\n".join(
+            [
+                "symbol,name,asset_type,sector,is_etf,is_inverse,is_leveraged,active",
+                "069500,KODEX 200,ETF,ETF,1,0,0,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bars = _make_daily_bars("069500", length=130)
+    CsvBarStore(bar_root).store_bars(bars)
+
+    artifacts = operations._build_and_write_weekly_recommendation(
+        log_dir=log_dir,
+        universe_file=universe_file,
+        bar_root=bar_root,
+        generated_at=datetime(2026, 12, 1, 12, 0, tzinfo=KST),
+        policy=RecommendationPolicy(
+            min_history_days=120,
+            min_average_traded_value=Decimal("1"),
+            top_n=1,
+            max_per_sector=1,
+        ),
+    )
+
+    payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
+    assert payload["as_of"] == bars[-1].timestamp.astimezone(KST).date().isoformat()
+    assert payload["summary"]["selected"] == 1
+    assert "stale_daily_bars" not in payload["filter_reason_counts"]
+
+
+def test_build_weekly_recommendation_reports_missing_bars_when_cache_empty(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    universe_file = tmp_path / "universe.csv"
+    universe_file.write_text(
+        "\n".join(
+            [
+                "symbol,name,asset_type,sector,is_etf,is_inverse,is_leveraged,active",
+                "069500,KODEX 200,ETF,ETF,1,0,0,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generated_at = datetime(2026, 12, 1, 12, 0, tzinfo=KST)
+
+    artifacts = operations._build_and_write_weekly_recommendation(
+        log_dir=log_dir,
+        universe_file=universe_file,
+        bar_root=log_dir / "bars",
+        generated_at=generated_at,
+        policy=RecommendationPolicy(),
+    )
+
+    payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
+    assert payload["as_of"] == "2026-12-01"
+    assert payload["summary"]["selected"] == 0
+    assert payload["filter_reason_counts"]["missing_daily_bars"] == 1
+
+
+def test_collect_daily_bars_for_universe_uses_seed_symbols(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_collect_strategy_bars(
+        settings: AppSettings,
+        *,
+        bar_root: Path,
+        timeframe: Timeframe,
+        generated_at: datetime,
+    ) -> None:
+        captured["target_symbols"] = settings.target_symbols
+        captured["bar_root"] = bar_root
+        captured["timeframe"] = timeframe
+        captured["generated_at"] = generated_at
+
+    monkeypatch.setattr(
+        operations,
+        "_collect_strategy_bars",
+        fake_collect_strategy_bars,
+    )
+    universe_file = tmp_path / "universe.csv"
+    universe_file.write_text(
+        "\n".join(
+            [
+                "symbol,name,asset_type,sector,is_etf,is_inverse,is_leveraged,active",
+                "069500,KODEX 200,ETF,ETF,1,0,0,1",
+                "357870,TIGER CD금리투자KIS,ETF,ETF,1,0,0,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generated_at = datetime(2026, 4, 24, 12, 0, tzinfo=KST)
+    bar_root = tmp_path / "logs" / "bars"
+
+    output_dir = operations._collect_daily_bars_for_universe(
+        settings=_settings(tmp_path / "logs"),
+        universe_file=universe_file,
+        bar_root=bar_root,
+        generated_at=generated_at,
+    )
+
+    assert output_dir == bar_root / "1d"
+    assert captured == {
+        "target_symbols": ("069500", "357870"),
+        "bar_root": bar_root,
+        "timeframe": Timeframe.DAY,
+        "generated_at": generated_at,
+    }
 
 
 def test_handle_approve_symbols_returns_operational_exit_code_on_runtime_error(
@@ -779,6 +962,28 @@ def _make_bar(symbol: str, timeframe: Timeframe, timestamp: str) -> Bar:
         close=Decimal("104"),
         volume=10,
     )
+
+
+def _make_daily_bars(symbol: str, *, length: int) -> tuple[Bar, ...]:
+    calendar = KrxRegularSessionCalendar()
+    timestamp = datetime(2026, 1, 2, 15, 30, tzinfo=KST)
+    bars: list[Bar] = []
+    for index in range(length):
+        close = Decimal("100") + Decimal(index)
+        bars.append(
+            Bar(
+                symbol=symbol,
+                timeframe=Timeframe.DAY,
+                timestamp=timestamp,
+                open=close - Decimal("1"),
+                high=close + Decimal("1"),
+                low=close - Decimal("2"),
+                close=close,
+                volume=1000,
+            )
+        )
+        timestamp = calendar.next_timestamp(timestamp, Timeframe.DAY)
+    return tuple(bars)
 
 
 def _settings(log_dir: Path) -> AppSettings:

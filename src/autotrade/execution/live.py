@@ -10,6 +10,7 @@ from decimal import Decimal
 from json import JSONDecodeError
 import logging
 from pathlib import Path
+from typing import cast
 from typing import Protocol
 from typing import TypeVar
 
@@ -109,6 +110,12 @@ class ExecutionStateStore(Protocol):
     ) -> None: ...
 
     def list_snapshots(self) -> tuple[OrderExecutionSnapshot, ...]: ...
+
+
+class _OrderAwareFillReader(Protocol):
+    def get_fills_for_order(
+        self, order: ExecutionOrder
+    ) -> tuple[ExecutionFill, ...]: ...
 
 
 class InMemoryExecutionStateStore:
@@ -327,9 +334,7 @@ class OrderExecutionEngine:
 
     def sync_fills(self, order_id: str) -> OrderExecutionSnapshot:
         current = self._require_snapshot(order_id)
-        fills = self._run_with_retry(
-            lambda: self._trader.get_fills(current.order.order_id)
-        )
+        fills = self._run_with_retry(lambda: self._get_fills(current.order))
         merged_fills = _merge_fills(current.fills, fills)
         order = _apply_fills_to_order(current.order, merged_fills)
         snapshot = OrderExecutionSnapshot(order=order, fills=merged_fills)
@@ -374,6 +379,11 @@ class OrderExecutionEngine:
         if resolved_order_id == request.order_id:
             return request
         return replace(request, order_id=resolved_order_id)
+
+    def _get_fills(self, order: ExecutionOrder) -> tuple[ExecutionFill, ...]:
+        if callable(getattr(self._trader, "get_fills_for_order", None)):
+            return cast(_OrderAwareFillReader, self._trader).get_fills_for_order(order)
+        return self._trader.get_fills(order.order_id)
 
     def _require_snapshot(self, order_id: str) -> OrderExecutionSnapshot:
         snapshot = self._state_store.get_snapshot(order_id)

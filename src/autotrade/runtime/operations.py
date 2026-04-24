@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -338,6 +340,28 @@ def _handle_weekly_review(args: argparse.Namespace) -> int:
         _log_operation_failure("weekly-review", exc)
         return EXIT_CODE_OPERATION_FAILED
     print(weekly_review.report_path)
+    return EXIT_CODE_SUCCESS
+
+
+def _handle_collect_daily_bars(args: argparse.Namespace) -> int:
+    logger.info("추천용 일봉 수집을 준비합니다.")
+    settings = _load_runtime_settings(args.env_file)
+    if settings is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+
+    generated_at = datetime.now(KST)
+    resolved_bar_root = args.bar_root or (settings.log_dir / "bars")
+    try:
+        output_dir = _collect_daily_bars_for_universe(
+            settings=settings,
+            universe_file=args.universe_file,
+            bar_root=resolved_bar_root,
+            generated_at=generated_at,
+        )
+    except Exception as exc:
+        _log_operation_failure("collect-daily-bars", exc)
+        return EXIT_CODE_OPERATION_FAILED
+    print(output_dir)
     return EXIT_CODE_SUCCESS
 
 
@@ -716,10 +740,49 @@ def _build_and_write_weekly_recommendation(
         universe,
         bars_by_symbol,
         policy,
-        as_of=generated_at.date(),
+        as_of=_resolve_weekly_recommendation_as_of(
+            bars_by_symbol,
+            generated_at=generated_at,
+        ),
         generated_at=generated_at,
     )
     return write_recommendation_bundle(log_dir, report)
+
+
+def _resolve_weekly_recommendation_as_of(
+    bars_by_symbol: Mapping[str, tuple[Bar, ...]],
+    *,
+    generated_at: datetime,
+) -> date:
+    latest_dates = [
+        series[-1].timestamp.astimezone(KST).date()
+        for series in bars_by_symbol.values()
+        if series
+    ]
+    if latest_dates:
+        return max(latest_dates)
+    return generated_at.astimezone(KST).date()
+
+
+def _collect_daily_bars_for_universe(
+    *,
+    settings: AppSettings,
+    universe_file: Path,
+    bar_root: Path,
+    generated_at: datetime,
+) -> Path:
+    universe = load_seed_universe_csv(universe_file)
+    collection_settings = replace(
+        settings,
+        target_symbols=tuple(member.symbol for member in universe),
+    )
+    _collect_strategy_bars(
+        collection_settings,
+        bar_root=bar_root,
+        timeframe=Timeframe.DAY,
+        generated_at=generated_at,
+    )
+    return bar_root / Timeframe.DAY.value
 
 
 def _load_candidate_report_for_approval(
@@ -806,7 +869,7 @@ def _require_log_dir(environment: Mapping[str, str]) -> Path | None:
             "설정 로딩에 실패했습니다: Missing required setting AUTOTRADE_LOG_DIR"
         )
         return None
-    return Path(raw_log_dir).expanduser()
+    return Path(os.path.expandvars(raw_log_dir)).expanduser()
 
 
 def _load_candidate_payload(path: Path) -> dict[str, object] | None:
@@ -843,9 +906,11 @@ __all__ = [
     "_build_weekly_review_notifier",
     "_collection_window_start",
     "_configure_logging",
+    "_collect_daily_bars_for_universe",
     "_collect_strategy_bars",
     "_execute_live_cycle",
     "_handle_approve_symbols",
+    "_handle_collect_daily_bars",
     "_handle_daily_inspection",
     "_handle_market_close",
     "_handle_market_open",

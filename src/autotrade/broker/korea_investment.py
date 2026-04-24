@@ -141,6 +141,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class _OrderHistoryLookup:
+    records: tuple[Mapping[str, object], ...]
+    summary: Mapping[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
 class HttpRequest:
     method: str
     url: str
@@ -1537,11 +1543,36 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
 
     def get_fills(self, order_id: str) -> tuple[ExecutionFill, ...]:
+        return self._get_fills(order_id, current_order=None)
+
+    def get_fills_for_order(self, order: ExecutionOrder) -> tuple[ExecutionFill, ...]:
+        return self._get_fills(order.order_id, current_order=order)
+
+    def _get_fills(
+        self,
+        order_id: str,
+        *,
+        current_order: ExecutionOrder | None,
+    ) -> tuple[ExecutionFill, ...]:
         self._ensure_realtime_fill_listener_started()
+        reference_time = self._clock()
         realtime_fills = self._realtime_fill_cache.get(order_id)
-        record = self._find_order_record_for_fills(
-            order_id, reference_time=self._clock()
+        lookup = self._load_order_history(
+            reference_time,
+            order_id=order_id,
         )
+        record = self._find_order_record_for_fills(
+            order_id,
+            records=lookup.records,
+        )
+        if record is None and current_order is not None:
+            inferred_fill = _build_fill_from_order_history_summary(
+                current_order,
+                lookup.summary,
+                fallback=reference_time,
+            )
+            if inferred_fill is not None:
+                return (*realtime_fills, inferred_fill)
         if record is None:
             if realtime_fills:
                 return realtime_fills
@@ -1563,7 +1594,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                 symbol=_coerce_string(record.get("pdno"), field_name="pdno"),
                 quantity=filled_quantity,
                 price=_coerce_decimal(average_price_raw, field_name="avg_prvs"),
-                filled_at=_parse_fill_timestamp(record, fallback=self._clock()),
+                filled_at=_parse_fill_timestamp(record, fallback=reference_time),
             ),
         )
 
@@ -1636,7 +1667,20 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         self,
         reference_time: datetime,
     ) -> tuple[Mapping[str, object], ...]:
+        return self._load_order_history(reference_time).records
+
+    def _load_order_history(
+        self,
+        reference_time: datetime,
+        *,
+        order_id: str | None = None,
+    ) -> _OrderHistoryLookup:
         inquiry_date = reference_time.astimezone(KST).strftime("%Y%m%d")
+        normalized_order_id = (
+            _normalize_order_identifier(order_id)
+            if order_id is not None and order_id.strip()
+            else ""
+        )
         payload = self._request_json(
             "GET",
             KIS_ORDER_HISTORY_PATH,
@@ -1650,7 +1694,7 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
                 "PDNO": "",
                 "CCLD_DVSN": "00",
                 "ORD_GNO_BRNO": "",
-                "ODNO": "",
+                "ODNO": normalized_order_id,
                 "INQR_DVSN_3": "00",
                 "INQR_DVSN_1": "",
                 "CTX_AREA_FK100": "",
@@ -1664,15 +1708,19 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             for row in rows
             if isinstance(row, Mapping) and not _is_blank_value(row.get("odno"))
         )
-        return tuple(
-            sorted(
-                records,
-                key=lambda record: _parse_order_timestamp(
-                    record,
-                    fallback=reference_time,
-                ),
-                reverse=True,
-            )
+        summary = payload.get("output2")
+        return _OrderHistoryLookup(
+            records=tuple(
+                sorted(
+                    records,
+                    key=lambda record: _parse_order_timestamp(
+                        record,
+                        fallback=reference_time,
+                    ),
+                    reverse=True,
+                )
+            ),
+            summary=summary if isinstance(summary, Mapping) else None,
         )
 
     def _load_amendable_order_records(self) -> tuple[Mapping[str, object], ...]:
@@ -1744,10 +1792,10 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         self,
         order_id: str,
         *,
-        reference_time: datetime,
+        records: Sequence[Mapping[str, object]],
     ) -> Mapping[str, object] | None:
         history_match = _find_matching_order_record(
-            self._load_order_records(reference_time),
+            records,
             order_id.strip(),
         )
         if history_match is not None:
@@ -2186,6 +2234,36 @@ def _record_to_execution_order(
             _coerce_optional_int(record.get("tot_ccld_qty")) or 0,
             quantity,
         ),
+    )
+
+
+def _build_fill_from_order_history_summary(
+    order: ExecutionOrder,
+    summary: Mapping[str, object] | None,
+    *,
+    fallback: datetime,
+) -> ExecutionFill | None:
+    if summary is None:
+        return None
+
+    filled_quantity = _coerce_optional_int(summary.get("tot_ccld_qty")) or 0
+    if filled_quantity <= 0 or filled_quantity > order.quantity:
+        return None
+
+    total_amount_raw = summary.get("tot_ccld_amt")
+    if _is_blank_value(total_amount_raw):
+        return None
+    total_amount = _coerce_decimal(total_amount_raw, field_name="tot_ccld_amt")
+    if total_amount <= Decimal("0"):
+        return None
+
+    return ExecutionFill(
+        fill_id=f"{order.order_id}{KIS_CUMULATIVE_FILL_ID_SUFFIX}",
+        order_id=order.order_id,
+        symbol=order.symbol,
+        quantity=filled_quantity,
+        price=total_amount / Decimal(filled_quantity),
+        filled_at=fallback,
     )
 
 

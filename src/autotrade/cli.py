@@ -115,6 +115,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     weekly_review_parser.set_defaults(handler=operations._handle_weekly_review)
 
+    collect_daily_bars_parser = subparsers.add_parser(
+        "collect-daily-bars",
+        help="추천용 일봉 CSV 바 데이터를 수집합니다.",
+    )
+    collect_daily_bars_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
+    )
+    collect_daily_bars_parser.add_argument(
+        "--universe-file",
+        type=Path,
+        required=True,
+        help="일봉을 수집할 seed universe CSV 파일 경로입니다.",
+    )
+    collect_daily_bars_parser.add_argument(
+        "--bar-root",
+        type=Path,
+        default=None,
+        help="일봉 CSV 바 데이터 루트 경로입니다. 기본값은 AUTOTRADE_LOG_DIR/bars 입니다.",
+    )
+    collect_daily_bars_parser.set_defaults(
+        handler=operations._handle_collect_daily_bars
+    )
+
     weekly_recommendation_parser = subparsers.add_parser(
         "weekly-recommendation",
         help="주간 종목 후보 리포트를 생성합니다.",

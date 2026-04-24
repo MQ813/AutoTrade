@@ -765,6 +765,60 @@ def test_korea_investment_broker_trader_returns_cumulative_fill_snapshot() -> No
     )
 
 
+def test_korea_investment_broker_trader_uses_filtered_summary_for_missing_fill_row() -> (
+    None
+):
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [],
+                    "output2": {
+                        "tot_ord_qty": "1",
+                        "tot_ccld_qty": "1",
+                        "tot_ccld_amt": "98100",
+                    },
+                }
+            ),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 24, 10, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    order = ExecutionOrder(
+        order_id="0000011960",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=1,
+        limit_price=Decimal("98100"),
+        status=OrderStatus.ACKNOWLEDGED,
+        created_at=datetime(2026, 4, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        updated_at=datetime(2026, 4, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        filled_quantity=0,
+    )
+
+    fills = trader.get_fills_for_order(order)
+
+    assert fills == (
+        ExecutionFill(
+            fill_id="0000011960:cumulative",
+            order_id="0000011960",
+            symbol="069500",
+            quantity=1,
+            price=Decimal("98100"),
+            filled_at=datetime(2026, 4, 24, 10, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        ),
+    )
+    assert parse_qs(urlsplit(transport.requests[1].url).query)["ODNO"] == ["11960"]
+
+
 def test_korea_investment_broker_trader_returns_realtime_fill_notice_without_history() -> (
     None
 ):
