@@ -11,7 +11,9 @@ if str(SRC) not in sys.path:
 
 from autotrade.recommendation.kis_seed_universe import DEFAULT_KIS_RAW_DIR  # noqa: E402
 from autotrade.recommendation.kis_seed_universe import SeedUniverseAssetScope  # noqa: E402
-from autotrade.recommendation.kis_seed_universe import build_seed_universe_from_kis_files  # noqa: E402
+from autotrade.recommendation.kis_seed_universe import (  # noqa: E402
+    build_seed_universe_from_kis_files,
+)
 from autotrade.recommendation.kis_seed_universe import diff_seed_universe  # noqa: E402
 from autotrade.recommendation.kis_seed_universe import download_kis_stocks_info_files  # noqa: E402
 from autotrade.recommendation.kis_seed_universe import load_kis_stocks_info_files  # noqa: E402

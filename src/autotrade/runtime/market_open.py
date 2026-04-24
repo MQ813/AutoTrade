@@ -276,9 +276,7 @@ class MarketOpenPreparationResult:
                 f"previous_error_sources={','.join(self.previous_day_errors.sources)}"
             )
         if self.attention_reasons:
-            parts.append(
-                "attention_reasons=" + ",".join(self.attention_reasons)
-            )
+            parts.append("attention_reasons=" + ",".join(self.attention_reasons))
         if self.failure_reasons:
             parts.append(f"failure_reasons={','.join(self.failure_reasons)}")
         return " ".join(parts)

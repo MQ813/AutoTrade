@@ -765,8 +765,9 @@ def test_korea_investment_broker_trader_returns_cumulative_fill_snapshot() -> No
     )
 
 
-def test_korea_investment_broker_trader_returns_realtime_fill_notice_without_history(
-) -> None:
+def test_korea_investment_broker_trader_returns_realtime_fill_notice_without_history() -> (
+    None
+):
     websocket = ScriptedWebSocketConnection(
         [
             _fill_notice_ack_message(tr_id="H0STCNI9"),
@@ -1821,10 +1822,7 @@ def _fill_notice_ack_message(*, tr_id: str) -> str:
 
 
 def _fill_notice_data_message(*, tr_id: str, payload: str) -> str:
-    return (
-        f"0|{tr_id}|1|"
-        f"{_encrypt_fill_notice_payload(payload)}"
-    )
+    return f"0|{tr_id}|1|{_encrypt_fill_notice_payload(payload)}"
 
 
 def _encrypt_fill_notice_payload(payload: str) -> str:

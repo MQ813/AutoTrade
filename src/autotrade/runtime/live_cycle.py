@@ -497,6 +497,15 @@ class LiveCycleRuntime:
         )
         if requested_quantity <= 0:
             logger.info("수량 계산 결과가 0이라 주문하지 않습니다. symbol=%s", symbol)
+            risk_check = evaluate_buy_order(
+                self.settings.risk,
+                risk_snapshot,
+                ProposedBuyOrder(
+                    symbol=symbol,
+                    price=order_price,
+                    quantity=1,
+                ),
+            )
             notification = _build_risk_block_notification(
                 symbol=symbol,
                 signal=signal,
@@ -504,6 +513,7 @@ class LiveCycleRuntime:
                 requested_quantity=0,
                 approved_quantity=0,
                 reason="risk sizing produced zero quantity",
+                risk_check=risk_check,
             )
             self.notifier.send(notification)
             return LiveCycleSymbolResult(
@@ -514,6 +524,7 @@ class LiveCycleRuntime:
                 status="risk_blocked",
                 requested_quantity=0,
                 approved_quantity=0,
+                risk_check=risk_check,
                 notifications=tuple([*published_notifications, notification]),
                 fills=tuple(published_fills),
             )
@@ -911,7 +922,9 @@ def _build_risk_block_notification(
                 f"violation={violation.code.value} message={violation.message}"
             )
 
-    severity = AlertSeverity.ERROR if approved_quantity <= 0 else AlertSeverity.WARNING
+    severity = AlertSeverity.WARNING
+    if risk_check is not None and risk_check.should_halt_trading:
+        severity = AlertSeverity.ERROR
     return NotificationMessage(
         created_at=created_at,
         severity=severity,

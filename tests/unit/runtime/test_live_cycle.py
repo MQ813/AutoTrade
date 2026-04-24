@@ -27,6 +27,7 @@ from autotrade.data import KrxRegularSessionCalendar
 from autotrade.data import Timeframe
 from autotrade.execution import FileExecutionStateStore
 from autotrade.execution import OrderExecutionEngine
+from autotrade.report import AlertSeverity
 from autotrade.report import FileNotifier
 from autotrade.report import NotificationMessage
 from autotrade.runtime import LiveCycleRuntime
@@ -298,7 +299,10 @@ def test_live_cycle_runtime_blocks_top_up_when_existing_position_reaches_weight_
     )
     notifier = RecordingNotifier()
     runtime = LiveCycleRuntime(
-        settings=_settings(log_dir),
+        settings=_settings(
+            log_dir,
+            risk=RiskSettings(entry_max_position_weight_per_order=Decimal("1")),
+        ),
         strategy=FixedStrategy(SignalAction.BUY),
         timeframe=Timeframe.MINUTE_30,
         bar_source=StaticBarSource({"069500": (bar,)}),
@@ -315,8 +319,14 @@ def test_live_cycle_runtime_blocks_top_up_when_existing_position_reaches_weight_
     assert result.symbol_results[0].status == "risk_blocked"
     assert result.symbol_results[0].requested_quantity == 0
     assert result.symbol_results[0].approved_quantity == 0
+    assert result.symbol_results[0].risk_check is not None
+    assert [
+        violation.code for violation in result.symbol_results[0].risk_check.violations
+    ] == [RiskViolationCode.MAX_POSITION_WEIGHT_EXCEEDED]
     assert len(notifier.notifications) == 1
     assert notifier.notifications[0].subject == "AutoTrade risk block 069500"
+    assert notifier.notifications[0].severity is AlertSeverity.WARNING
+    assert "violation=max_position_weight_exceeded" in notifier.notifications[0].body
 
 
 def test_live_cycle_runtime_syncs_pending_buy_without_duplicate_submit(

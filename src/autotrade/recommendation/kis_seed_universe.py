@@ -54,9 +54,7 @@ class SeedUniverseDiff:
 
     @property
     def has_changes(self) -> bool:
-        return bool(
-            self.added_symbols or self.removed_symbols or self.changed_symbols
-        )
+        return bool(self.added_symbols or self.removed_symbols or self.changed_symbols)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,7 +295,9 @@ def build_seed_universe_from_kis_files(
             raise ValueError(f"duplicate symbol in KIS metadata: {entry.symbol}")
         entries_by_symbol[entry.symbol] = entry
     if not entries_by_symbol:
-        raise ValueError(f"no supported seed universe entries for asset_scope={asset_scope}")
+        raise ValueError(
+            f"no supported seed universe entries for asset_scope={asset_scope}"
+        )
     return tuple(sorted(entries_by_symbol.values(), key=lambda entry: entry.symbol))
 
 
@@ -495,12 +495,8 @@ def _load_kospi_like_records(
                 etp_product_code=_optional_fixed_field(
                     tail_fields[field_indexes["etp_product_code"]]
                 ),
-                trading_halt=_is_true_flag(
-                    tail_fields[field_indexes["trading_halt"]]
-                ),
-                cleanup_sale=_is_true_flag(
-                    tail_fields[field_indexes["cleanup_sale"]]
-                ),
+                trading_halt=_is_true_flag(tail_fields[field_indexes["trading_halt"]]),
+                cleanup_sale=_is_true_flag(tail_fields[field_indexes["cleanup_sale"]]),
                 management_issue=_is_true_flag(
                     tail_fields[field_indexes["management_issue"]]
                 ),
@@ -539,7 +535,10 @@ def _resolve_asset_type(record: KisMasterRecord) -> str | None:
     etp_product_code = (record.etp_product_code or "").strip()
     if record.market == "KONEX":
         return "Stock"
-    if security_group_code in _ETF_GROUP_CODES or etp_product_code in _ETF_PRODUCT_CODES:
+    if (
+        security_group_code in _ETF_GROUP_CODES
+        or etp_product_code in _ETF_PRODUCT_CODES
+    ):
         return "ETF"
     if security_group_code in _STOCK_GROUP_CODES:
         return "Stock"

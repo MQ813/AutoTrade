@@ -243,9 +243,7 @@ class _WebSocketConnection:
                 continue
             if opcode == 0xA:
                 continue
-            raise KoreaInvestmentBrokerError(
-                f"unsupported websocket opcode: {opcode}"
-            )
+            raise KoreaInvestmentBrokerError(f"unsupported websocket opcode: {opcode}")
 
     def close(self) -> None:
         if self._closed:
@@ -800,9 +798,7 @@ class _KoreaInvestmentApiClient:
         )
         approval_key = payload.get("approval_key")
         if not isinstance(approval_key, str) or not approval_key.strip():
-            raise KoreaInvestmentBrokerError(
-                "approval response missing approval_key"
-            )
+            raise KoreaInvestmentBrokerError("approval response missing approval_key")
         return approval_key.strip()
 
     def _get_access_token(self) -> str:
@@ -1549,7 +1545,9 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         if record is None:
             if realtime_fills:
                 return realtime_fills
-            raise KoreaInvestmentBrokerError(f"order history missing order_id={order_id}")
+            raise KoreaInvestmentBrokerError(
+                f"order history missing order_id={order_id}"
+            )
         filled_quantity = _coerce_optional_int(record.get("tot_ccld_qty")) or 0
         if filled_quantity <= 0:
             return realtime_fills
@@ -2455,10 +2453,7 @@ def _is_token_expired_payload(payload: Mapping[str, object] | None) -> bool:
     if payload is None:
         return False
     msg_cd = payload.get("msg_cd")
-    return (
-        isinstance(msg_cd, str)
-        and msg_cd.strip() == KIS_TOKEN_EXPIRED_MSG_CODE
-    )
+    return isinstance(msg_cd, str) and msg_cd.strip() == KIS_TOKEN_EXPIRED_MSG_CODE
 
 
 def _format_kis_payload_error(payload: Mapping[str, object]) -> str:

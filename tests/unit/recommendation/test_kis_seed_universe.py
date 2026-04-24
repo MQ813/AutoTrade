@@ -4,7 +4,9 @@ from pathlib import Path
 
 from autotrade.recommendation.kis_seed_universe import KisStocksInfoFiles
 from autotrade.recommendation.kis_seed_universe import SeedUniverseAssetScope
-from autotrade.recommendation.kis_seed_universe import build_seed_universe_from_kis_files
+from autotrade.recommendation.kis_seed_universe import (
+    build_seed_universe_from_kis_files,
+)
 from autotrade.recommendation.kis_seed_universe import diff_seed_universe
 from autotrade.recommendation.kis_seed_universe import summarize_seed_universe_diff
 from autotrade.recommendation.kis_seed_universe import write_seed_universe_csv
@@ -316,8 +318,7 @@ def _build_kospi_like_row(
 ) -> str:
     prefix = symbol.ljust(9)[:9] + standard_code.ljust(12)[:12] + name
     tail = "".join(
-        value.ljust(width)[:width]
-        for value, width in zip(fields, widths, strict=True)
+        value.ljust(width)[:width] for value, width in zip(fields, widths, strict=True)
     )
     return prefix + tail.ljust(tail_length)
 
