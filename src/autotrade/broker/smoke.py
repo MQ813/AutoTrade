@@ -55,6 +55,7 @@ def run_read_only_smoke(
         settings.broker,
         transport=transport,
         clock=now,
+        sleep=resolved_sleep,
     )
     steps: list[SmokeStep] = [
         SmokeStep(name="smoke", status="start", detail=target_symbol)

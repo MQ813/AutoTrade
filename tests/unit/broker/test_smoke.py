@@ -269,7 +269,7 @@ def test_run_read_only_smoke_retries_kis_rate_limit_errors(tmp_path) -> None:
     )
 
     assert report.success is True
-    assert sleeps == [1.1, 1.1]
+    assert sleeps == [1.5, 1.5]
     assert [urlsplit(request.url).path for request in transport.requests] == [
         "/oauth2/tokenP",
         "/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -279,14 +279,8 @@ def test_run_read_only_smoke_retries_kis_rate_limit_errors(tmp_path) -> None:
         "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
     ]
     rendered = render_smoke_report(report)
-    assert (
-        "step=get_holdings status=retry "
-        "detail=attempt=2 delay_seconds=1.1 error=HTTP 500"
-    ) in rendered
-    assert (
-        "step=get_order_capacity status=retry "
-        "detail=attempt=2 delay_seconds=1.1 error=HTTP 500"
-    ) in rendered
+    assert "step=get_holdings status=success detail=0" in rendered
+    assert "step=get_order_capacity status=success detail=069500:13" in rendered
 
 
 def json_response(payload: dict[str, object], status: int = 200) -> HttpResponse:

@@ -93,8 +93,17 @@ KIS_ORDER_HISTORY_PATH: Final[str] = (
     "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 )
 KIS_LIMIT_ORDER_DIVISION: Final[str] = "00"
-KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.1
-KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 0.5
+KIS_PAPER_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = 1.1
+KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = (
+    KIS_PAPER_MIN_REQUEST_INTERVAL_SECONDS
+)
+KIS_LIVE_MAX_REQUESTS_PER_SECOND: Final[float] = 15.0
+KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS: Final[float] = (
+    1.0 / KIS_LIVE_MAX_REQUESTS_PER_SECOND
+)
+KIS_RATE_LIMIT_MSG_CODE: Final[str] = "EGW00201"
+KIS_RATE_LIMIT_RETRY_DELAYS_SECONDS: Final[tuple[float, ...]] = (1.5, 3.0, 5.0)
+KIS_TRANSPORT_RETRY_DELAYS_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0, 4.0)
 KIS_ORDER_HISTORY_LOOKUP_DELAY_MULTIPLIERS: Final[tuple[int, ...]] = (1, 2, 3)
 KIS_DAILY_CHART_PAGE_SIZE: Final[int] = 100
 KIS_INTRADAY_CHART_PAGE_SIZE: Final[int] = 120
@@ -659,14 +668,16 @@ class _KoreaInvestmentApiClient:
     ) -> Mapping[str, object]:
         method_name = method.upper()
         allow_token_refresh_retry = path != KIS_TOKEN_PATH
-        max_attempts = 2 if allow_token_refresh_retry else 1
         request_body = (
             json.dumps(body, separators=(",", ":")).encode("utf-8")
             if body is not None
             else None
         )
 
-        for attempt_index in range(max_attempts):
+        token_refresh_attempted = False
+        rate_limit_retry_index = 0
+        transport_retry_index = 0
+        while True:
             request = HttpRequest(
                 method=method_name,
                 url=_build_url(self._base_url, path, params),
@@ -682,19 +693,56 @@ class _KoreaInvestmentApiClient:
             try:
                 response = self._transport(request)
             except TimeoutError as error:
+                next_retry_index = self._maybe_retry_transport_failure(
+                    method=method_name,
+                    path=path,
+                    url=request.url,
+                    message="request timed out",
+                    detail=error,
+                    retry_index=transport_retry_index,
+                )
+                if next_retry_index is not None:
+                    transport_retry_index = next_retry_index
+                    continue
                 raise KoreaInvestmentBrokerError(
                     _format_transport_failure("request timed out", error)
                 ) from error
             except URLError as error:
+                next_retry_index = self._maybe_retry_transport_failure(
+                    method=method_name,
+                    path=path,
+                    url=request.url,
+                    message="network request failed",
+                    detail=error.reason,
+                    retry_index=transport_retry_index,
+                )
+                if next_retry_index is not None:
+                    transport_retry_index = next_retry_index
+                    continue
                 raise KoreaInvestmentBrokerError(
                     _format_transport_failure("network request failed", error.reason)
+                ) from error
+            except ConnectionError as error:
+                next_retry_index = self._maybe_retry_transport_failure(
+                    method=method_name,
+                    path=path,
+                    url=request.url,
+                    message="network request failed",
+                    detail=error,
+                    retry_index=transport_retry_index,
+                )
+                if next_retry_index is not None:
+                    transport_retry_index = next_retry_index
+                    continue
+                raise KoreaInvestmentBrokerError(
+                    _format_transport_failure("network request failed", error)
                 ) from error
 
             self._write_raw_http_log(request=request, response=response)
             payload = _try_decode_json(response.body)
             if (
                 allow_token_refresh_retry
-                and attempt_index == 0
+                and not token_refresh_attempted
                 and _is_token_expired_payload(payload)
             ):
                 logger.warning(
@@ -703,6 +751,23 @@ class _KoreaInvestmentApiClient:
                     path,
                 )
                 self._invalidate_access_token()
+                token_refresh_attempted = True
+                continue
+
+            if _is_rate_limit_payload(payload) and rate_limit_retry_index < len(
+                KIS_RATE_LIMIT_RETRY_DELAYS_SECONDS
+            ):
+                delay_seconds = KIS_RATE_LIMIT_RETRY_DELAYS_SECONDS[
+                    rate_limit_retry_index
+                ]
+                rate_limit_retry_index += 1
+                logger.warning(
+                    "KIS request hit rate limit, retrying after delay. method=%s url=%s delay_seconds=%.1f",
+                    method_name,
+                    _build_url(self._base_url, path, params),
+                    delay_seconds,
+                )
+                self._sleep(delay_seconds)
                 continue
 
             if response.status >= 400:
@@ -720,7 +785,31 @@ class _KoreaInvestmentApiClient:
             _raise_for_api_error(payload)
             return payload
 
-        raise AssertionError("request retry loop exhausted unexpectedly")
+    def _maybe_retry_transport_failure(
+        self,
+        *,
+        method: str,
+        path: str,
+        url: str,
+        message: str,
+        detail: object,
+        retry_index: int,
+    ) -> int | None:
+        if not _is_retryable_transport_request(method, path):
+            return None
+        if retry_index >= len(KIS_TRANSPORT_RETRY_DELAYS_SECONDS):
+            return None
+
+        delay_seconds = KIS_TRANSPORT_RETRY_DELAYS_SECONDS[retry_index]
+        logger.warning(
+            "KIS request transport failure, retrying after delay. method=%s url=%s delay_seconds=%.1f error=%s",
+            method,
+            url,
+            delay_seconds,
+            _format_transport_failure(message, detail),
+        )
+        self._sleep(delay_seconds)
+        return retry_index + 1
 
     def _write_raw_http_log(
         self,
@@ -2325,20 +2414,38 @@ def _parse_daily_chart_bar(
         raise KoreaInvestmentBrokerError(
             "stck_bsop_date must use YYYYMMDD format"
         ) from error
-    return Bar(
-        symbol=symbol,
-        timeframe=Timeframe.DAY,
-        timestamp=parsed_date.replace(
-            hour=KRX_SESSION_CLOSE.hour,
-            minute=KRX_SESSION_CLOSE.minute,
-            tzinfo=KST,
-        ),
-        open=_coerce_decimal(row.get("stck_oprc"), field_name="stck_oprc"),
-        high=_coerce_decimal(row.get("stck_hgpr"), field_name="stck_hgpr"),
-        low=_coerce_decimal(row.get("stck_lwpr"), field_name="stck_lwpr"),
-        close=_coerce_decimal(row.get("stck_clpr"), field_name="stck_clpr"),
-        volume=_coerce_optional_int(row.get("acml_vol")) or 0,
-    )
+    open_price = _coerce_decimal(row.get("stck_oprc"), field_name="stck_oprc")
+    high = _coerce_decimal(row.get("stck_hgpr"), field_name="stck_hgpr")
+    low = _coerce_decimal(row.get("stck_lwpr"), field_name="stck_lwpr")
+    close = _coerce_decimal(row.get("stck_clpr"), field_name="stck_clpr")
+    volume = _coerce_optional_int(row.get("acml_vol")) or 0
+    if volume == 0 and close > 0:
+        open_price = close
+        high = close
+        low = close
+
+    try:
+        return Bar(
+            symbol=symbol,
+            timeframe=Timeframe.DAY,
+            timestamp=parsed_date.replace(
+                hour=KRX_SESSION_CLOSE.hour,
+                minute=KRX_SESSION_CLOSE.minute,
+                tzinfo=KST,
+            ),
+            open=open_price,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
+        )
+    except ValueError as error:
+        raise KoreaInvestmentBrokerError(
+            "invalid KIS daily bar "
+            f"symbol={symbol} date={base_date} "
+            f"open={open_price} high={high} low={low} close={close} "
+            f"volume={volume}: {error}"
+        ) from error
 
 
 def _parse_intraday_chart_bar(
@@ -2532,6 +2639,23 @@ def _is_token_expired_payload(payload: Mapping[str, object] | None) -> bool:
         return False
     msg_cd = payload.get("msg_cd")
     return isinstance(msg_cd, str) and msg_cd.strip() == KIS_TOKEN_EXPIRED_MSG_CODE
+
+
+def _is_rate_limit_payload(payload: Mapping[str, object] | None) -> bool:
+    if payload is None:
+        return False
+    msg_cd = payload.get("msg_cd")
+    return isinstance(msg_cd, str) and msg_cd.strip() == KIS_RATE_LIMIT_MSG_CODE
+
+
+def _is_retryable_transport_request(method: str, path: str) -> bool:
+    if method == "GET":
+        return True
+    return method == "POST" and path in {
+        KIS_TOKEN_PATH,
+        KIS_APPROVAL_PATH,
+        KIS_HASHKEY_PATH,
+    }
 
 
 def _format_kis_payload_error(payload: Mapping[str, object]) -> str:

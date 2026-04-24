@@ -1,12 +1,12 @@
 # Graph Report - /home/minq/codes_wsl/AutoTrade  (2026-04-24)
 
 ## Corpus Check
-- 118 files · ~219,650 words
+- 118 files · ~222,046 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1579 nodes · 4751 edges · 42 communities detected
-- Extraction: 64% EXTRACTED · 36% INFERRED · 0% AMBIGUOUS · INFERRED: 1726 edges (avg confidence: 0.76)
+- 1594 nodes · 4810 edges · 44 communities detected
+- Extraction: 64% EXTRACTED · 36% INFERRED · 0% AMBIGUOUS · INFERRED: 1754 edges (avg confidence: 0.76)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -52,124 +52,126 @@
 - [[_COMMUNITY_Community 39|Community 39]]
 - [[_COMMUNITY_Community 40|Community 40]]
 - [[_COMMUNITY_Community 41|Community 41]]
+- [[_COMMUNITY_Community 42|Community 42]]
+- [[_COMMUNITY_Community 43|Community 43]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `PaperBroker` - 47 edges
-2. `KoreaInvestmentBrokerError` - 42 edges
-3. `KoreaInvestmentBrokerTrader` - 42 edges
-4. `BrokerSettings` - 41 edges
-5. `Bar` - 40 edges
+2. `BrokerSettings` - 44 edges
+3. `KoreaInvestmentBrokerTrader` - 43 edges
+4. `KoreaInvestmentBrokerError` - 42 edges
+5. `Bar` - 41 edges
 6. `RiskSettings` - 40 edges
 7. `FileExecutionStateStore` - 40 edges
-8. `OrderExecutionEngine` - 37 edges
-9. `RecordingTransport` - 35 edges
-10. `LiveCycleRuntime` - 32 edges
+8. `RecordingTransport` - 39 edges
+9. `OrderExecutionEngine` - 37 edges
+10. `_make_settings()` - 37 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `Bar` --calls--> `test_bar_accepts_valid_ohlc_payload()`  [INFERRED]
+  /home/minq/codes_wsl/AutoTrade/src/autotrade/data/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/data/test_data_models.py
+- `Bar` --calls--> `test_bar_rejects_invalid_values()`  [INFERRED]
+  /home/minq/codes_wsl/AutoTrade/src/autotrade/data/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/data/test_data_models.py
 - `RiskSettings` --calls--> `test_risk_settings_accepts_operating_capital_limit()`  [INFERRED]
   /home/minq/codes_wsl/AutoTrade/src/autotrade/risk/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/config/test_models.py
 - `RiskSettings` --calls--> `test_risk_settings_rejects_non_positive_operating_capital_limit()`  [INFERRED]
   /home/minq/codes_wsl/AutoTrade/src/autotrade/risk/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/config/test_models.py
 - `BrokerSettings` --calls--> `test_broker_settings_reject_blank_hts_id()`  [INFERRED]
   /home/minq/codes_wsl/AutoTrade/src/autotrade/config/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/config/test_models.py
-- `TelegramSettings` --calls--> `test_telegram_settings_require_bot_token_and_chat_id_when_enabled()`  [INFERRED]
-  /home/minq/codes_wsl/AutoTrade/src/autotrade/config/models.py → /home/minq/codes_wsl/AutoTrade/tests/unit/config/test_models.py
-- `_KisDownloadSource` --uses--> `SeedUniverseEntry`  [INFERRED]
-  /home/minq/codes_wsl/AutoTrade/src/autotrade/recommendation/kis_seed_universe.py → /home/minq/codes_wsl/AutoTrade/src/autotrade/recommendation/models.py
 
 ## Communities
 
 ### Community 0 - "Community 0"
-Cohesion: 0.04
-Nodes (87): BrokerNormalizationError, Raised when broker payloads cannot be normalized to internal models., _aggregate_intraday_bars(), _build_fill_from_order_history_summary(), _build_fill_notice_subscription_message(), _build_management_order_record_from_submission(), _build_url(), CachedAccessToken (+79 more)
+Cohesion: 0.03
+Nodes (98): _average_traded_value(), _build_metrics(), build_recommendation_report(), _calculate_return(), _percentile_score(), _rank_candidates(), _realized_volatility(), _resolve_as_of() (+90 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.03
-Nodes (114): SeedUniverseAssetScope, _apply_inspection_updates(), _build_failure_inspection_report(), _build_loss_limit_inspection_item(), _build_market_close_inspection_report(), build_market_close_job(), _build_next_day_preparation(), _daily_fills() (+106 more)
+Cohesion: 0.04
+Nodes (92): BrokerNormalizationError, Raised when broker payloads cannot be normalized to internal models., _aggregate_intraday_bars(), _build_fill_from_order_history_summary(), _build_fill_notice_subscription_message(), _build_management_order_record_from_submission(), _build_url(), CachedAccessToken (+84 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.05
-Nodes (66): _apply_fills_to_order(), _deserialize_fill(), _deserialize_order(), _deserialize_request(), _deserialize_snapshot(), _deserialize_tracked_request(), DuplicateExecutionRequestError, ExecutionEngineError (+58 more)
+Cohesion: 0.04
+Nodes (114): SeedUniverseAssetScope, _apply_inspection_updates(), _build_failure_inspection_report(), _build_loss_limit_inspection_item(), _build_market_close_inspection_report(), build_market_close_job(), _build_next_day_preparation(), _daily_fills() (+106 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.04
-Nodes (73): _average_traded_value(), _build_metrics(), build_recommendation_report(), _calculate_return(), _percentile_score(), _rank_candidates(), _realized_volatility(), _resolve_as_of() (+65 more)
+Cohesion: 0.05
+Nodes (79): create_live_cycle_runtime(), LiveCycleRuntime, _normalize_strategy_kind(), strategy_timeframe_for(), FileExecutionStateStore, _build_market_open_notification(), _build_pre_market_items(), _build_preview_bar() (+71 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.05
-Nodes (64): KrxRegularSessionCalendar, build_weekly_review_report(), build_safe_stop_notification(), _compose_safe_stop_detail(), _failed_jobs_reason(), _require_aware_datetime(), _require_non_blank_text(), RunnerResult (+56 more)
+Nodes (64): KrxRegularSessionCalendar, build_market_open_preparation_job(), build_weekly_review_report(), build_market_close_job(), build_scheduled_cycle_job(), build_safe_stop_notification(), _compose_safe_stop_detail(), _failed_jobs_reason() (+56 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.05
-Nodes (60): apply_buy_fill(), apply_sell_fill(), BacktestPortfolioState, BacktestResult, BacktestTrade, build_portfolio_snapshot(), _buy_execution_price(), _calculate_buy_quantity() (+52 more)
+Cohesion: 0.04
+Nodes (86): main(), Raised when required settings are missing or invalid., _run_smoke_for_timestamp(), AppSettings, TelegramSettings, _approve_symbols(), _build_and_write_weekly_recommendation(), _build_and_write_weekly_review() (+78 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.09
-Nodes (60): HttpResponse, KoreaInvestmentBrokerReader, _split_account(), _urllib_transport(), ExecutionFill, ExecutionOrder, OrderAmendRequest, OrderCancelRequest (+52 more)
+Cohesion: 0.06
+Nodes (61): _apply_fills_to_order(), _deserialize_fill(), _deserialize_order(), _deserialize_request(), _deserialize_snapshot(), _deserialize_tracked_request(), DuplicateExecutionRequestError, ExecutionEngineError (+53 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.06
-Nodes (70): TelegramSettings, _approve_symbols(), _build_and_write_weekly_recommendation(), _build_and_write_weekly_review(), _build_broker_clients(), _build_market_close_job(), _build_notifier(), _build_operation_services() (+62 more)
+Cohesion: 0.08
+Nodes (70): HttpResponse, KoreaInvestmentBarSource, KoreaInvestmentBrokerReader, KoreaInvestmentBrokerTrader, _split_account(), ExecutionFill, ExecutionOrder, OrderAmendRequest (+62 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.05
-Nodes (49): main(), Raised when required settings are missing or invalid., _build_market_open_notification(), build_market_open_preparation_job(), _build_pre_market_items(), _build_preview_bar(), _build_preview_risk_account_snapshot(), _calculate_current_equity() (+41 more)
+Cohesion: 0.04
+Nodes (48): BarCollectionService, BarIntegrityChecker, BarSource, BarStore, Read-only contract for loading a target universe., Read-only contract for loading OHLC bars., Write-only contract for persisting OHLC bars., Contract for validating a bar series before persistence. (+40 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.05
-Nodes (38): BarCollectionService, BarIntegrityChecker, BarSource, BarStore, Read-only contract for loading a target universe., Read-only contract for loading OHLC bars., Write-only contract for persisting OHLC bars., Contract for validating a bar series before persistence. (+30 more)
+Cohesion: 0.07
+Nodes (53): apply_buy_fill(), apply_sell_fill(), BacktestConfig, BacktestCostModel, BacktestEngine, BacktestOverfitCheck, BacktestPerformanceSummary, BacktestPortfolioState (+45 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.06
-Nodes (60): collect_holiday_dates(), extract_holiday_dates_from_xls(), extract_holiday_dates_from_xls_bytes(), main(), render_holiday_module(), write_holiday_module(), path(), ConfigError (+52 more)
+Nodes (35): should_cancel_unfilled_orders(), FileIntradayRiskStateStore, IntradayRiskState, _require_mapping(), _require_optional_decimal(), _require_optional_non_negative_decimal(), _require_optional_positive_decimal(), _require_text() (+27 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.05
-Nodes (43): should_cancel_unfilled_orders(), FileIntradayRiskStateStore, IntradayRiskState, _require_mapping(), _require_optional_decimal(), _require_optional_non_negative_decimal(), _require_optional_positive_decimal(), _require_text() (+35 more)
+Cohesion: 0.08
+Nodes (28): BrokerReader, BrokerTrader, from_snapshot(), PaperBroker, PaperBrokerSnapshot, _require_non_negative_decimal(), _require_positive_int(), from_snapshot() (+20 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.1
-Nodes (46): create_live_cycle_runtime(), LiveCycleRuntime, _normalize_strategy_kind(), strategy_timeframe_for(), FileExecutionStateStore, FileNotifier, build_broker_clients(), build_notifier() (+38 more)
-
-### Community 13 - "Community 13"
-Cohesion: 0.07
-Nodes (29): BrokerReader, BrokerTrader, from_snapshot(), PaperBroker, PaperBrokerSnapshot, _PaperPosition, _require_non_negative_decimal(), _require_positive_int() (+21 more)
-
-### Community 14 - "Community 14"
-Cohesion: 0.1
-Nodes (36): _make_bar(), _make_bars(), test_daily_trend_following_generates_buy_signal_with_reason(), test_strategy_rejects_gapped_bar_series(), test_strategy_rejects_invalid_series_structure(), test_strategy_returns_hold_for_insufficient_history(), test_thirty_minute_trend_generates_sell_signal_with_reason(), _make_bar() (+28 more)
-
-### Community 15 - "Community 15"
 Cohesion: 0.15
 Nodes (40): _calculate_drawdown(), _calculate_loss_amount(), calculate_max_buy_quantity(), _calculate_max_buy_quantity_by_cash(), _calculate_max_buy_quantity_by_entry_order_weight(), _calculate_max_buy_quantity_by_operating_capital(), _calculate_max_buy_quantity_by_weight(), _calculate_projected_position_weight() (+32 more)
 
-### Community 16 - "Community 16"
+### Community 13 - "Community 13"
 Cohesion: 0.1
 Nodes (38): main(), build_seed_universe_from_kis_files(), diff_seed_universe(), _download_and_extract_zip_member(), download_kis_stocks_info_files(), _is_inverse_name(), _is_leveraged_name(), _is_true_flag() (+30 more)
 
-### Community 17 - "Community 17"
+### Community 14 - "Community 14"
 Cohesion: 0.11
 Nodes (29): CompositeNotifier, _decode_telegram_payload(), _extract_retry_after_seconds(), _format_telegram_messages(), _network_retry_delay_seconds(), NotificationDeliveryError, _retry_delay_seconds(), _split_long_line() (+21 more)
 
-### Community 18 - "Community 18"
-Cohesion: 0.14
-Nodes (28): BacktestConfig, BacktestCostModel, BacktestEngine, BacktestOverfitCheck, BacktestPerformanceSummary, BacktestReport, build_backtest_report(), _build_overfit_check() (+20 more)
+### Community 15 - "Community 15"
+Cohesion: 0.15
+Nodes (34): ConfigError, _load_risk_settings(), load_settings(), load_telegram_settings(), _parse_bool_setting(), _parse_broker_environment(), _parse_decimal_setting(), _parse_float_setting() (+26 more)
 
-### Community 19 - "Community 19"
+### Community 16 - "Community 16"
+Cohesion: 0.1
+Nodes (26): collect_holiday_dates(), extract_holiday_dates_from_xls(), extract_holiday_dates_from_xls_bytes(), main(), render_holiday_module(), write_holiday_module(), path(), _load_daily_inspection_module() (+18 more)
+
+### Community 17 - "Community 17"
 Cohesion: 0.14
 Nodes (22): ApprovedSymbolsArtifacts, deserialize_approved_symbols_record(), load_approved_symbols_record(), load_latest_approved_symbols(), _require_mapping(), _require_text(), serialize_approved_symbols_record(), write_approved_symbols() (+14 more)
 
+### Community 18 - "Community 18"
+Cohesion: 0.24
+Nodes (19): _make_bar(), test_normalize_symbols_preserves_order(), test_normalize_symbols_rejects_duplicates_after_normalization(), test_validate_bar_series_accepts_contiguous_series(), test_validate_bar_series_allows_session_boundary_gap(), test_validate_bar_series_allows_weekend_boundary_gap(), test_validate_bar_series_applies_holiday_injection(), test_validate_bar_series_rejects_duplicates() (+11 more)
+
+### Community 19 - "Community 19"
+Cohesion: 0.2
+Nodes (14): _make_bar(), _make_bars(), test_daily_trend_following_generates_buy_signal_with_reason(), test_strategy_rejects_gapped_bar_series(), test_strategy_rejects_invalid_series_structure(), test_strategy_returns_hold_for_insufficient_history(), test_thirty_minute_trend_generates_sell_signal_with_reason(), _build_signal() (+6 more)
+
 ### Community 20 - "Community 20"
+Cohesion: 0.21
+Nodes (14): OrderCapacity, Quote, _get_required_value(), normalize_holding(), normalize_order_capacity(), normalize_quote(), _parse_aware_datetime(), _parse_decimal() (+6 more)
+
+### Community 21 - "Community 21"
 Cohesion: 0.15
 Nodes (14): _add_runtime_arguments(), _build_parser(), main(), main_daily_inspection_compat(), main_live_cycle_compat(), main_weekly_review_compat(), main(), main() (+6 more)
 
-### Community 21 - "Community 21"
-Cohesion: 1.0
-Nodes (1): Generated KRX regular-session holiday dates.  Regenerate with: `python tools/krx
-
 ### Community 22 - "Community 22"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (1): Generated KRX regular-session holiday dates.  Regenerate with: `python tools/krx
 
 ### Community 23 - "Community 23"
 Cohesion: 1.0
@@ -229,32 +231,38 @@ Nodes (0):
 
 ### Community 37 - "Community 37"
 Cohesion: 1.0
-Nodes (1): Raised when order execution cannot be completed safely.
+Nodes (0): 
 
 ### Community 38 - "Community 38"
 Cohesion: 1.0
-Nodes (1): Raised when a request id is reused with different payload.
+Nodes (1): KIS_ACCESS_TOKEN 환경변수가 없을 때만 1회 발급합니다.     반복 발급 테스트용이 아닙니다.
 
 ### Community 39 - "Community 39"
 Cohesion: 1.0
-Nodes (1): Raised when an order cannot be found in local execution state.
+Nodes (1): Raised when order execution cannot be completed safely.
 
 ### Community 40 - "Community 40"
 Cohesion: 1.0
-Nodes (1): Raised when an order transition is not allowed.
+Nodes (1): Raised when a request id is reused with different payload.
 
 ### Community 41 - "Community 41"
+Cohesion: 1.0
+Nodes (1): Raised when an order cannot be found in local execution state.
+
+### Community 42 - "Community 42"
+Cohesion: 1.0
+Nodes (1): Raised when an order transition is not allowed.
+
+### Community 43 - "Community 43"
 Cohesion: 1.0
 Nodes (1): Raised when an operation can be retried safely.
 
 ## Knowledge Gaps
-- **16 isolated node(s):** `Generated KRX regular-session holiday dates.  Regenerate with: `python tools/krx`, `Deterministic, read-only signal generation contract.`, `_TrendFollowingConfig`, `Raised when order execution cannot be completed safely.`, `Raised when a request id is reused with different payload.` (+11 more)
+- **17 isolated node(s):** `Generated KRX regular-session holiday dates.  Regenerate with: `python tools/krx`, `Deterministic, read-only signal generation contract.`, `_TrendFollowingConfig`, `Raised when order execution cannot be completed safely.`, `Raised when a request id is reused with different payload.` (+12 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 21`** (2 nodes): `krx_holidays.py`, `Generated KRX regular-session holiday dates.  Regenerate with: `python tools/krx`
+- **Thin community `Community 22`** (2 nodes): `krx_holidays.py`, `Generated KRX regular-session holiday dates.  Regenerate with: `python tools/krx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 22`** (2 nodes): `operations.py`, `main()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 23`** (1 nodes): `__init__.py`
+- **Thin community `Community 23`** (2 nodes): `operations.py`, `main()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 24`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -262,9 +270,9 @@ Nodes (1): Raised when an operation can be retried safely.
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 26`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 27`** (1 nodes): `operations.py`
+- **Thin community `Community 27`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 28`** (1 nodes): `__init__.py`
+- **Thin community `Community 28`** (1 nodes): `operations.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 29`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -282,31 +290,35 @@ Nodes (1): Raised when an operation can be retried safely.
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 36`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 37`** (1 nodes): `Raised when order execution cannot be completed safely.`
+- **Thin community `Community 37`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 38`** (1 nodes): `Raised when a request id is reused with different payload.`
+- **Thin community `Community 38`** (1 nodes): `KIS_ACCESS_TOKEN 환경변수가 없을 때만 1회 발급합니다.     반복 발급 테스트용이 아닙니다.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 39`** (1 nodes): `Raised when an order cannot be found in local execution state.`
+- **Thin community `Community 39`** (1 nodes): `Raised when order execution cannot be completed safely.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 40`** (1 nodes): `Raised when an order transition is not allowed.`
+- **Thin community `Community 40`** (1 nodes): `Raised when a request id is reused with different payload.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 41`** (1 nodes): `Raised when an operation can be retried safely.`
+- **Thin community `Community 41`** (1 nodes): `Raised when an order cannot be found in local execution state.`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 42`** (1 nodes): `Raised when an order transition is not allowed.`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 43`** (1 nodes): `Raised when an operation can be retried safely.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `_require_aware_datetime()` connect `Community 4` to `Community 1`, `Community 5`, `Community 17`?**
-  _High betweenness centrality (0.045) - this node is a cross-community bridge._
-- **Why does `BrokerSettings` connect `Community 0` to `Community 1`, `Community 5`, `Community 6`, `Community 7`, `Community 8`, `Community 10`, `Community 12`?**
-  _High betweenness centrality (0.043) - this node is a cross-community bridge._
-- **Why does `BrokerNormalizationError` connect `Community 0` to `Community 5`, `Community 6`?**
+- **Why does `Bar` connect `Community 3` to `Community 0`, `Community 1`, `Community 2`, `Community 4`, `Community 5`, `Community 7`, `Community 8`, `Community 9`, `Community 11`, `Community 18`, `Community 19`?**
+  _High betweenness centrality (0.052) - this node is a cross-community bridge._
+- **Why does `PaperBroker` connect `Community 11` to `Community 1`, `Community 2`, `Community 3`, `Community 5`, `Community 7`?**
   _High betweenness centrality (0.042) - this node is a cross-community bridge._
+- **Why does `BrokerNormalizationError` connect `Community 1` to `Community 0`, `Community 20`, `Community 7`?**
+  _High betweenness centrality (0.041) - this node is a cross-community bridge._
 - **Are the 153 inferred relationships involving `ValueError` (e.g. with `.__post_init__()` and `.__post_init__()`) actually correct?**
   _`ValueError` has 153 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 25 inferred relationships involving `PaperBroker` (e.g. with `ReplaySessionSnapshot` and `ReplayLogEntry`) actually correct?**
   _`PaperBroker` has 25 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 6 inferred relationships involving `KoreaInvestmentBrokerError` (e.g. with `BrokerNormalizationError` and `BrokerReader`) actually correct?**
-  _`KoreaInvestmentBrokerError` has 6 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 23 inferred relationships involving `KoreaInvestmentBrokerTrader` (e.g. with `BrokerNormalizationError` and `BrokerReader`) actually correct?**
-  _`KoreaInvestmentBrokerTrader` has 23 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 42 inferred relationships involving `BrokerSettings` (e.g. with `ConfigError` and `Raised when required settings are missing or invalid.`) actually correct?**
+  _`BrokerSettings` has 42 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 24 inferred relationships involving `KoreaInvestmentBrokerTrader` (e.g. with `BrokerNormalizationError` and `BrokerReader`) actually correct?**
+  _`KoreaInvestmentBrokerTrader` has 24 INFERRED edges - model-reasoned connections that need verification._

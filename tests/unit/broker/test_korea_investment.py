@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
+from http.client import RemoteDisconnected
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import parse_qs
@@ -24,6 +25,7 @@ from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
 from autotrade.broker.korea_investment import KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
 from autotrade.broker.korea_investment import KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS
+from autotrade.broker.korea_investment import KIS_TRANSPORT_RETRY_DELAYS_SECONDS
 from autotrade.broker.korea_investment import _resolve_min_request_interval_seconds
 from autotrade.broker.korea_investment import _split_account
 from autotrade.common import ExecutionFill
@@ -166,6 +168,10 @@ def test_korea_investment_broker_reader_returns_standard_models() -> None:
     ("error", "message"),
     [
         (URLError("connection reset"), "network request failed"),
+        (
+            RemoteDisconnected("Remote end closed connection without response"),
+            "network request failed",
+        ),
         (TimeoutError("timed out"), "request timed out"),
     ],
 )
@@ -176,13 +182,106 @@ def test_korea_investment_broker_reader_normalizes_transport_failures(
     def broken_transport(request: HttpRequest) -> HttpResponse:
         raise error
 
+    sleeps: list[float] = []
     reader = KoreaInvestmentBrokerReader(
         _make_settings(),
         transport=broken_transport,
+        sleep=sleeps.append,
     )
 
     with pytest.raises(KoreaInvestmentBrokerError, match=message):
         reader.get_quote("069500")
+    assert sleeps == list(KIS_TRANSPORT_RETRY_DELAYS_SECONDS)
+
+
+def test_korea_investment_broker_reader_retries_transient_network_failure() -> None:
+    request_paths: list[str] = []
+    quote_attempts = 0
+
+    def flaky_transport(request: HttpRequest) -> HttpResponse:
+        nonlocal quote_attempts
+        path = urlsplit(request.url).path
+        request_paths.append(path)
+        if path == "/oauth2/tokenP":
+            return json_response({"access_token": "token-123"})
+        if path == "/uapi/domestic-stock/v1/quotations/inquire-price":
+            quote_attempts += 1
+            if quote_attempts == 1:
+                raise URLError(OSError(-3, "Temporary failure in name resolution"))
+            return json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345",
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected request path: {path}")
+
+    sleeps: list[float] = []
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=flaky_transport,
+        sleep=sleeps.append,
+    )
+
+    quote = reader.get_quote("069500")
+
+    assert quote.price == Decimal("12345")
+    assert sleeps == [KIS_TRANSPORT_RETRY_DELAYS_SECONDS[0]]
+    assert request_paths == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+    ]
+
+
+def test_korea_investment_broker_reader_retries_remote_disconnected() -> None:
+    request_paths: list[str] = []
+    quote_attempts = 0
+
+    def flaky_transport(request: HttpRequest) -> HttpResponse:
+        nonlocal quote_attempts
+        path = urlsplit(request.url).path
+        request_paths.append(path)
+        if path == "/oauth2/tokenP":
+            return json_response({"access_token": "token-123"})
+        if path == "/uapi/domestic-stock/v1/quotations/inquire-price":
+            quote_attempts += 1
+            if quote_attempts == 1:
+                raise RemoteDisconnected(
+                    "Remote end closed connection without response"
+                )
+            return json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345",
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected request path: {path}")
+
+    sleeps: list[float] = []
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=flaky_transport,
+        sleep=sleeps.append,
+    )
+
+    quote = reader.get_quote("069500")
+
+    assert quote.price == Decimal("12345")
+    assert sleeps == [KIS_TRANSPORT_RETRY_DELAYS_SECONDS[0]]
+    assert request_paths == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+    ]
 
 
 def test_korea_investment_broker_reader_normalizes_invalid_json_response() -> None:
@@ -606,6 +705,50 @@ def test_korea_investment_broker_trader_submits_limit_order_with_hashkey() -> No
         "ORD_QTY": "3",
         "ORD_UNPR": "10000",
     }
+
+
+def test_korea_investment_broker_trader_does_not_retry_order_transport_failure() -> (
+    None
+):
+    request_paths: list[str] = []
+
+    def broken_order_transport(request: HttpRequest) -> HttpResponse:
+        path = urlsplit(request.url).path
+        request_paths.append(path)
+        if path == "/oauth2/tokenP":
+            return json_response({"access_token": "token-123"})
+        if path == "/uapi/hashkey":
+            return json_response({"HASH": "hash-123"})
+        if path == "/uapi/domestic-stock/v1/trading/order-cash":
+            raise URLError("connection reset")
+        raise AssertionError(f"unexpected request path: {path}")
+
+    sleeps: list[float] = []
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=broken_order_transport,
+        sleep=sleeps.append,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    with pytest.raises(KoreaInvestmentBrokerError, match="network request failed"):
+        trader.submit_order(
+            OrderRequest(
+                request_id="submit-1",
+                symbol="069500",
+                side=OrderSide.BUY,
+                quantity=3,
+                limit_price=Decimal("10000"),
+                requested_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            )
+        )
+
+    assert sleeps == []
+    assert request_paths == [
+        "/oauth2/tokenP",
+        "/uapi/hashkey",
+        "/uapi/domestic-stock/v1/trading/order-cash",
+    ]
 
 
 def test_korea_investment_broker_trader_amends_and_cancels_using_order_history() -> (
@@ -1464,6 +1607,211 @@ def test_korea_investment_bar_source_loads_daily_bars() -> None:
     }
 
 
+def test_korea_investment_bar_source_normalizes_zero_volume_daily_bar() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output2": [
+                        {
+                            "stck_bsop_date": "20260411",
+                            "stck_oprc": "0",
+                            "stck_hgpr": "0",
+                            "stck_lwpr": "0",
+                            "stck_clpr": "2360",
+                            "acml_vol": "0",
+                        },
+                    ],
+                },
+            ),
+        },
+    )
+    source = KoreaInvestmentBarSource(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    bars = source.load_bars(
+        "199290",
+        Timeframe.DAY,
+        start=datetime(2026, 4, 11, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        end=datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert bars == (
+        Bar(
+            symbol="199290",
+            timeframe=Timeframe.DAY,
+            timestamp=datetime(2026, 4, 11, 15, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+            open=Decimal("2360"),
+            high=Decimal("2360"),
+            low=Decimal("2360"),
+            close=Decimal("2360"),
+            volume=0,
+        ),
+    )
+
+
+def test_korea_investment_bar_source_reports_invalid_daily_ohlc_context() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output2": [
+                        {
+                            "stck_bsop_date": "20260411",
+                            "stck_oprc": "100",
+                            "stck_hgpr": "105",
+                            "stck_lwpr": "99",
+                            "stck_clpr": "120",
+                            "acml_vol": "10",
+                        },
+                    ],
+                },
+            ),
+        },
+    )
+    source = KoreaInvestmentBarSource(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    with pytest.raises(
+        KoreaInvestmentBrokerError,
+        match=(
+            "invalid KIS daily bar symbol=069500 date=20260411 "
+            "open=100 high=105 low=99 close=120 volume=10"
+        ),
+    ):
+        source.load_bars(
+            "069500",
+            Timeframe.DAY,
+            start=datetime(2026, 4, 11, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            end=datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+
+
+def test_korea_investment_bar_source_retries_rate_limit_http_error() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            ): [
+                json_response(
+                    {
+                        "rt_cd": "1",
+                        "msg_cd": "EGW00201",
+                        "msg1": "초당 거래건수를 초과하였습니다.",
+                    },
+                    status=500,
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output2": [
+                            {
+                                "stck_bsop_date": "20260411",
+                                "stck_oprc": "102",
+                                "stck_hgpr": "105",
+                                "stck_lwpr": "101",
+                                "stck_clpr": "104",
+                                "acml_vol": "15",
+                            },
+                        ],
+                    },
+                ),
+            ],
+        },
+    )
+    sleeps: list[float] = []
+    source = KoreaInvestmentBarSource(
+        _make_settings(),
+        transport=transport,
+        sleep=sleeps.append,
+        clock=lambda: datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    bars = source.load_bars(
+        "069500",
+        Timeframe.DAY,
+        start=datetime(2026, 4, 11, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        end=datetime(2026, 4, 11, 21, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert len(bars) == 1
+    assert sleeps == [1.5]
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+    ]
+
+
+def test_korea_investment_reader_retries_rate_limit_payload_error() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response(
+                {"access_token": "token-123"},
+            ),
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): [
+                json_response(
+                    {
+                        "rt_cd": "1",
+                        "msg_cd": "EGW00201",
+                        "msg1": "초당 거래건수를 초과하였습니다.",
+                    },
+                ),
+                json_response(
+                    {
+                        "rt_cd": "0",
+                        "output": {
+                            "stck_bsop_date": "20260411",
+                            "stck_cntg_hour": "090000",
+                            "stck_prpr": "12345",
+                        },
+                    },
+                ),
+            ],
+        },
+    )
+    sleeps: list[float] = []
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=transport,
+        sleep=sleeps.append,
+    )
+
+    quote = reader.get_quote("069500")
+
+    assert quote.price == Decimal("12345")
+    assert sleeps == [1.5]
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+    ]
+
+
 def test_korea_investment_bar_source_aggregates_intraday_bars_into_30m_bars() -> None:
     transport = RecordingTransport(
         {
@@ -1755,6 +2103,11 @@ def test_resolve_min_request_interval_seconds_uses_environment_default(
         )
         == expected
     )
+
+
+def test_kis_request_interval_defaults_match_environment_policy() -> None:
+    assert KIS_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS == 1.1
+    assert KIS_LIVE_MIN_REQUEST_INTERVAL_SECONDS == pytest.approx(1.0 / 15.0)
 
 
 def _make_settings(
