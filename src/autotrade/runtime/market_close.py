@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import date
 from datetime import datetime
+from decimal import Decimal
 import logging
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from autotrade.scheduler import JobContext
 from autotrade.scheduler import JobRunResult
 from autotrade.scheduler import MarketSessionPhase
 from autotrade.scheduler import ScheduledJob
+from autotrade.runtime.intraday_risk_state import FileIntradayRiskStateStore
+from autotrade.runtime.intraday_risk_state import IntradayRiskState
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +279,7 @@ class MarketCloseRuntime:
             log_dir=self.settings.log_dir,
             trading_day=trading_day,
             generated_at=finished_at,
+            max_loss=self.settings.risk.max_loss,
             daily_report_path=daily_report_path,
             next_day_preparation_path=next_day_preparation_path,
             daily_report=daily_report,
@@ -473,6 +477,7 @@ def _build_market_close_inspection_report(
     log_dir: Path,
     trading_day: date,
     generated_at: datetime,
+    max_loss: Decimal | None,
     daily_report_path: Path,
     next_day_preparation_path: Path,
     daily_report: DailyRunReport,
@@ -531,6 +536,14 @@ def _build_market_close_inspection_report(
             ),
             detail=f"rejected_orders={len(rejected_orders)}",
         ),
+        (
+            InspectionWindow.INTRADAY,
+            "손실 상한 도달 여부 확인",
+        ): _build_loss_limit_inspection_item(
+            log_dir=log_dir,
+            trading_day=trading_day,
+            max_loss=max_loss,
+        ),
         (InspectionWindow.POST_MARKET, "당일 주문 내역 저장"): DailyInspectionItem(
             window=InspectionWindow.POST_MARKET,
             label="당일 주문 내역 저장",
@@ -581,6 +594,116 @@ def _build_market_close_inspection_report(
         generated_at=generated_at,
         items=_apply_inspection_updates(items, updates),
     )
+
+
+def _build_loss_limit_inspection_item(
+    *,
+    log_dir: Path,
+    trading_day: date,
+    max_loss: Decimal | None,
+) -> DailyInspectionItem:
+    state = FileIntradayRiskStateStore(log_dir / "intraday_risk_state.json").load()
+    if max_loss is None:
+        return DailyInspectionItem(
+            window=InspectionWindow.INTRADAY,
+            label="손실 상한 도달 여부 확인",
+            status=InspectionStatus.PASSED,
+            detail=_loss_limit_detail(
+                max_loss="not_configured",
+                state=state,
+                state_status="available" if state is not None else "missing",
+            ),
+        )
+
+    if state is None:
+        return DailyInspectionItem(
+            window=InspectionWindow.INTRADAY,
+            label="손실 상한 도달 여부 확인",
+            status=InspectionStatus.PENDING,
+            detail=_loss_limit_detail(max_loss=str(max_loss), state_status="missing"),
+        )
+    if state.trading_day != trading_day:
+        return DailyInspectionItem(
+            window=InspectionWindow.INTRADAY,
+            label="손실 상한 도달 여부 확인",
+            status=InspectionStatus.PENDING,
+            detail=_loss_limit_detail(
+                max_loss=str(max_loss),
+                state=state,
+                state_status="stale",
+            ),
+        )
+
+    missing_fields = tuple(
+        field_name
+        for field_name, value in (
+            ("session_start_equity", state.session_start_equity),
+            ("latest_equity", state.latest_equity),
+        )
+        if value is None
+    )
+    if missing_fields:
+        return DailyInspectionItem(
+            window=InspectionWindow.INTRADAY,
+            label="손실 상한 도달 여부 확인",
+            status=InspectionStatus.PENDING,
+            detail=_loss_limit_detail(
+                max_loss=str(max_loss),
+                state=state,
+                state_status="incomplete",
+                missing_fields=missing_fields,
+            ),
+        )
+
+    session_start_equity = state.session_start_equity
+    latest_equity = state.latest_equity
+    assert session_start_equity is not None
+    assert latest_equity is not None
+    loss_amount = max(session_start_equity - latest_equity, Decimal("0"))
+    return DailyInspectionItem(
+        window=InspectionWindow.INTRADAY,
+        label="손실 상한 도달 여부 확인",
+        status=(
+            InspectionStatus.FAILED
+            if loss_amount >= max_loss
+            else InspectionStatus.PASSED
+        ),
+        detail=_loss_limit_detail(
+            max_loss=str(max_loss),
+            state=state,
+            state_status="available",
+            loss_amount=loss_amount,
+        ),
+    )
+
+
+def _loss_limit_detail(
+    *,
+    max_loss: str,
+    state: IntradayRiskState | None = None,
+    state_status: str,
+    missing_fields: tuple[str, ...] = (),
+    loss_amount: Decimal | None = None,
+) -> str:
+    parts = [f"max_loss={max_loss}", f"state={state_status}"]
+    if state is not None:
+        parts.extend(_intraday_risk_state_detail_parts(state))
+    if missing_fields:
+        parts.append(f"missing_fields={','.join(missing_fields)}")
+    if loss_amount is not None:
+        parts.append(f"loss_amount={loss_amount}")
+    return " ".join(parts)
+
+
+def _intraday_risk_state_detail_parts(state: IntradayRiskState) -> list[str]:
+    parts = [f"state_trading_day={state.trading_day.isoformat()}"]
+    if state.session_start_equity is not None:
+        parts.append(f"session_start_equity={state.session_start_equity}")
+    if state.peak_equity is not None:
+        parts.append(f"peak_equity={state.peak_equity}")
+    if state.latest_equity is not None:
+        parts.append(f"latest_equity={state.latest_equity}")
+    return parts
 
 
 def _build_failure_inspection_report(

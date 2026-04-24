@@ -5,6 +5,7 @@ from dataclasses import field
 from datetime import date
 from datetime import datetime
 from decimal import Decimal
+import json
 from pathlib import Path
 
 from autotrade.broker import PaperBroker
@@ -27,6 +28,7 @@ from autotrade.report import load_daily_inspection_report
 from autotrade.report import load_daily_run_report
 from autotrade.report import write_daily_inspection_report
 from autotrade.runtime.market_close import MarketCloseRuntime
+from autotrade.risk import RiskSettings
 from autotrade.scheduler import JobRunResult
 from autotrade.scheduler import MarketSessionPhase
 
@@ -134,11 +136,117 @@ def test_market_close_runtime_writes_daily_outputs_and_updates_inspection(
         and item.status is InspectionStatus.PASSED
         for item in inspection_report.items
     )
+    assert any(
+        item.label == "손실 상한 도달 여부 확인"
+        and item.status is InspectionStatus.PASSED
+        and "max_loss=not_configured" in (item.detail or "")
+        for item in inspection_report.items
+    )
     assert "next_trading_day=2026-04-13" in result.next_day_preparation_path.read_text(
         encoding="utf-8"
     )
     assert len(notifier.notifications) == 1
     assert "[OK]" in notifier.notifications[0].subject
+
+
+def test_market_close_runtime_marks_loss_limit_passed_from_runtime_state(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    trading_day = date(2026, 4, 10)
+    generated_at = datetime(2026, 4, 10, 15, 30, tzinfo=KST)
+    _write_intraday_risk_state(
+        log_dir,
+        trading_day=trading_day,
+        session_start_equity="1000",
+        peak_equity="1010",
+        latest_equity="960",
+    )
+    runtime = MarketCloseRuntime(
+        settings=_settings(log_dir, risk=RiskSettings(max_loss=Decimal("50"))),
+        broker_reader=PaperBroker(initial_cash=Decimal("1000000")),
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: generated_at,
+    )
+
+    runtime.run(timestamp=generated_at, triggered_at=generated_at)
+
+    inspection_report = load_daily_inspection_report(log_dir, trading_day)
+    assert inspection_report is not None
+    assert any(
+        item.label == "손실 상한 도달 여부 확인"
+        and item.status is InspectionStatus.PASSED
+        and "loss_amount=40" in (item.detail or "")
+        and "latest_equity=960" in (item.detail or "")
+        for item in inspection_report.items
+    )
+
+
+def test_market_close_runtime_marks_loss_limit_failed_when_reached(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    trading_day = date(2026, 4, 10)
+    generated_at = datetime(2026, 4, 10, 15, 30, tzinfo=KST)
+    _write_intraday_risk_state(
+        log_dir,
+        trading_day=trading_day,
+        session_start_equity="1000",
+        peak_equity="1000",
+        latest_equity="950",
+    )
+    runtime = MarketCloseRuntime(
+        settings=_settings(log_dir, risk=RiskSettings(max_loss=Decimal("50"))),
+        broker_reader=PaperBroker(initial_cash=Decimal("1000000")),
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: generated_at,
+    )
+
+    runtime.run(timestamp=generated_at, triggered_at=generated_at)
+
+    inspection_report = load_daily_inspection_report(log_dir, trading_day)
+    assert inspection_report is not None
+    assert any(
+        item.label == "손실 상한 도달 여부 확인"
+        and item.status is InspectionStatus.FAILED
+        and "loss_amount=50" in (item.detail or "")
+        for item in inspection_report.items
+    )
+
+
+def test_market_close_runtime_keeps_loss_limit_pending_for_legacy_state(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    trading_day = date(2026, 4, 10)
+    generated_at = datetime(2026, 4, 10, 15, 30, tzinfo=KST)
+    _write_intraday_risk_state(
+        log_dir,
+        trading_day=trading_day,
+        session_start_equity="1000",
+        peak_equity="1000",
+    )
+    runtime = MarketCloseRuntime(
+        settings=_settings(log_dir, risk=RiskSettings(max_loss=Decimal("50"))),
+        broker_reader=PaperBroker(initial_cash=Decimal("1000000")),
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: generated_at,
+    )
+
+    runtime.run(timestamp=generated_at, triggered_at=generated_at)
+
+    inspection_report = load_daily_inspection_report(log_dir, trading_day)
+    assert inspection_report is not None
+    assert any(
+        item.label == "손실 상한 도달 여부 확인"
+        and item.status is InspectionStatus.PENDING
+        and "state=incomplete" in (item.detail or "")
+        and "missing_fields=latest_equity" in (item.detail or "")
+        for item in inspection_report.items
+    )
 
 
 def test_market_close_runtime_degrades_to_failed_report_when_holdings_lookup_breaks(
@@ -315,7 +423,7 @@ def _job_result(
     )
 
 
-def _settings(log_dir: Path) -> AppSettings:
+def _settings(log_dir: Path, *, risk: RiskSettings | None = None) -> AppSettings:
     return AppSettings(
         broker=BrokerSettings(
             provider="koreainvestment",
@@ -326,6 +434,29 @@ def _settings(log_dir: Path) -> AppSettings:
         ),
         target_symbols=("069500",),
         log_dir=log_dir,
+        risk=risk or RiskSettings(),
+    )
+
+
+def _write_intraday_risk_state(
+    log_dir: Path,
+    *,
+    trading_day: date,
+    session_start_equity: str | None,
+    peak_equity: str | None,
+    latest_equity: str | None = None,
+) -> None:
+    payload = {
+        "trading_day": trading_day.isoformat(),
+        "session_start_equity": session_start_equity,
+        "peak_equity": peak_equity,
+    }
+    if latest_equity is not None:
+        payload["latest_equity"] = latest_equity
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "intraday_risk_state.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
     )
 
 

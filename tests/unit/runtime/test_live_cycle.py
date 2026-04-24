@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
+import json
 import logging
 
 from autotrade.broker import PaperBroker
@@ -704,6 +705,12 @@ def test_live_cycle_runtime_persists_intraday_loss_and_drawdown_baseline(
         RiskViolationCode.LOSS_LIMIT_REACHED,
         RiskViolationCode.DRAWDOWN_LIMIT_REACHED,
     }
+    state_payload = json.loads(
+        (log_dir / "intraday_risk_state.json").read_text(encoding="utf-8")
+    )
+    assert state_payload["session_start_equity"] == "1000"
+    assert state_payload["peak_equity"] == "1000"
+    assert state_payload["latest_equity"] == "980"
 
 
 def _build_trend_bars(symbol: str, timeframe: Timeframe) -> tuple[Bar, ...]:

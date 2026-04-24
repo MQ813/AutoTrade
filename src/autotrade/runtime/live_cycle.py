@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
-from datetime import date
 from datetime import datetime
 import logging
 from decimal import Decimal
-from json import JSONDecodeError
-from pathlib import Path
 
 from autotrade.broker import BrokerReader
 from autotrade.broker import BrokerTrader
-from autotrade.common.persistence import move_corrupt_file
-from autotrade.common.persistence import write_text_atomically
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
@@ -51,6 +45,8 @@ from autotrade.scheduler import ScheduledJob
 from autotrade.strategy import Strategy
 from autotrade.strategy import StrategyKind
 from autotrade.strategy import create_strategy
+from autotrade.runtime.intraday_risk_state import FileIntradayRiskStateStore
+from autotrade.runtime.intraday_risk_state import IntradayRiskState
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -60,71 +56,6 @@ _OPEN_ORDER_STATUSES = {
     OrderStatus.PARTIALLY_FILLED,
     OrderStatus.CANCEL_PENDING,
 }
-
-
-@dataclass(frozen=True, slots=True)
-class _IntradayRiskState:
-    trading_day: date
-    session_start_equity: Decimal | None
-    peak_equity: Decimal | None
-
-    def __post_init__(self) -> None:
-        _require_optional_positive_decimal(
-            "session_start_equity",
-            self.session_start_equity,
-        )
-        _require_optional_positive_decimal("peak_equity", self.peak_equity)
-
-
-@dataclass(slots=True)
-class _FileIntradayRiskStateStore:
-    path: Path
-
-    def __post_init__(self) -> None:
-        if self.path.exists() and self.path.is_dir():
-            raise ValueError("path must point to a file")
-
-    def load(self) -> _IntradayRiskState | None:
-        if not self.path.exists():
-            return None
-        try:
-            raw_payload = json.loads(self.path.read_text(encoding="utf-8"))
-            payload = _require_mapping(raw_payload, "serialized intraday risk state")
-            return _IntradayRiskState(
-                trading_day=date.fromisoformat(
-                    _require_text(payload.get("trading_day"), "trading_day")
-                ),
-                session_start_equity=_require_optional_decimal(
-                    payload.get("session_start_equity"),
-                    "session_start_equity",
-                ),
-                peak_equity=_require_optional_decimal(
-                    payload.get("peak_equity"),
-                    "peak_equity",
-                ),
-            )
-        except (JSONDecodeError, ValueError) as error:
-            backup_path = move_corrupt_file(self.path)
-            logger.warning(
-                "손상된 intraday risk 상태 파일을 백업하고 초기화합니다. path=%s backup=%s reason=%s",
-                self.path,
-                backup_path,
-                error,
-            )
-            return None
-
-    def save(self, state: _IntradayRiskState) -> None:
-        payload = {
-            "trading_day": state.trading_day.isoformat(),
-            "session_start_equity": _serialize_optional_decimal(
-                state.session_start_equity
-            ),
-            "peak_equity": _serialize_optional_decimal(state.peak_equity),
-        }
-        write_text_atomically(
-            self.path,
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +148,7 @@ class LiveCycleRuntime:
     state_store: FileExecutionStateStore
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(KST))
     execution_engine: OrderExecutionEngine = field(init=False, repr=False)
-    _risk_state_store: _FileIntradayRiskStateStore = field(
+    _risk_state_store: FileIntradayRiskStateStore = field(
         init=False,
         repr=False,
     )
@@ -227,7 +158,7 @@ class LiveCycleRuntime:
             self.broker_trader,
             state_store=self.state_store,
         )
-        self._risk_state_store = _FileIntradayRiskStateStore(
+        self._risk_state_store = FileIntradayRiskStateStore(
             self.settings.log_dir / "intraday_risk_state.json"
         )
 
@@ -723,19 +654,20 @@ class LiveCycleRuntime:
         *,
         generated_at: datetime,
         current_equity: Decimal,
-    ) -> _IntradayRiskState:
+    ) -> IntradayRiskState:
         trading_day = generated_at.astimezone(KST).date()
         current_state = self._risk_state_store.load()
         current_positive_equity = _positive_equity_or_none(current_equity)
 
         if current_state is None or current_state.trading_day != trading_day:
-            next_state = _IntradayRiskState(
+            next_state = IntradayRiskState(
                 trading_day=trading_day,
                 session_start_equity=current_positive_equity,
                 peak_equity=current_positive_equity,
+                latest_equity=current_equity,
             )
         else:
-            next_state = _IntradayRiskState(
+            next_state = IntradayRiskState(
                 trading_day=trading_day,
                 session_start_equity=(
                     current_state.session_start_equity or current_positive_equity
@@ -744,6 +676,7 @@ class LiveCycleRuntime:
                     current_state.peak_equity,
                     current_positive_equity,
                 ),
+                latest_equity=current_equity,
             )
 
         self._risk_state_store.save(next_state)
@@ -1074,45 +1007,6 @@ def _build_cancel_request_id(
     reason: str,
 ) -> str:
     return f"live-cycle:cancel:{reason}:{order_id}:{generated_at.isoformat()}"
-
-
-def _require_optional_positive_decimal(
-    field_name: str,
-    value: Decimal | None,
-) -> None:
-    if value is not None and value <= ZERO:
-        raise ValueError(f"{field_name} must be positive when provided")
-
-
-def _serialize_optional_decimal(value: Decimal | None) -> str | None:
-    if value is None:
-        return None
-    return str(value)
-
-
-def _require_mapping(raw_value: object, field_name: str) -> dict[str, object]:
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_name} must be a mapping")
-    if not all(isinstance(key, str) for key in raw_value):
-        raise ValueError(f"{field_name} must use string keys")
-    return raw_value
-
-
-def _require_text(raw_value: object, field_name: str) -> str:
-    if not isinstance(raw_value, str):
-        raise ValueError(f"{field_name} must be a string")
-    return raw_value
-
-
-def _require_optional_decimal(
-    raw_value: object,
-    field_name: str,
-) -> Decimal | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, str):
-        raise ValueError(f"{field_name} must be a decimal string")
-    return Decimal(raw_value)
 
 
 def _find_open_order(
