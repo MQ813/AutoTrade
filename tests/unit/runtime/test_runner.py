@@ -341,6 +341,49 @@ def test_scheduled_runner_logs_control_poller_failure_without_traceback(
     assert records[0].exc_info is None
 
 
+def test_scheduled_runner_suppresses_flapping_control_poller_logs(
+    tmp_path,
+    caplog,
+) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    clock = AdjustableClock(datetime(2026, 4, 10, 9, 0, tzinfo=KST))
+    outcomes = iter(("fail", "ok", "fail"))
+
+    def poller() -> None:
+        if next(outcomes) == "fail":
+            raise RuntimeError("network down")
+
+    runner = ScheduledRunner(
+        jobs=(),
+        state_store=state_store,
+        notifier=RecordingNotifier(),
+        control_store=control_store,
+        control_poller=poller,
+        clock=clock,
+    )
+    caplog.set_level(logging.INFO, logger="autotrade.runtime.runner")
+
+    runner._poll_and_load_control_state()
+    clock.current = datetime(2026, 4, 10, 9, 1, tzinfo=KST)
+    runner._poll_and_load_control_state()
+    clock.current = datetime(2026, 4, 10, 9, 2, tzinfo=KST)
+    runner._poll_and_load_control_state()
+
+    failure_records = [
+        record
+        for record in caplog.records
+        if "runner control poller 실행에 실패했습니다." in record.message
+    ]
+    recovery_records = [
+        record
+        for record in caplog.records
+        if "runner control poller가 복구되었습니다." in record.message
+    ]
+    assert len(failure_records) == 1
+    assert recovery_records == []
+
+
 @dataclass(slots=True)
 class RecordingNotifier:
     notifications: list[NotificationMessage] = field(default_factory=list)

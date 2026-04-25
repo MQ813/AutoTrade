@@ -66,6 +66,7 @@ class TelegramControlPoller:
             )
 
         next_offset = state.telegram_update_offset
+        notifications: list[NotificationMessage] = []
         for update in _require_update_list(decoded_payload.get("result")):
             update_id = update.get("update_id")
             if isinstance(update_id, int):
@@ -80,30 +81,44 @@ class TelegramControlPoller:
             )
             if command is None:
                 continue
-            self._apply_command(command)
+            notifications.append(self._apply_command(command))
 
         if next_offset is not None:
             self.control_store.save_telegram_update_offset(next_offset)
 
-    def _apply_command(self, command: TelegramControlCommand) -> None:
+        for notification in notifications:
+            self._send_notification(notification)
+
+    def _apply_command(
+        self,
+        command: TelegramControlCommand,
+    ) -> NotificationMessage:
         timestamp = self.clock()
         if command is TelegramControlCommand.PAUSE:
             state = self.control_store.pause(timestamp=timestamp, source="telegram")
         else:
             state = self.control_store.resume(timestamp=timestamp, source="telegram")
-        self.notifier.send(
-            NotificationMessage(
-                created_at=timestamp,
-                severity=AlertSeverity.INFO,
-                subject=f"AutoTrade runner control [{command.value.upper()}]",
-                body="\n".join(
-                    (
-                        f"mode={state.mode.value}",
-                        "source=telegram",
-                    )
-                ),
-            )
+        return NotificationMessage(
+            created_at=timestamp,
+            severity=AlertSeverity.INFO,
+            subject=f"AutoTrade runner control [{command.value.upper()}]",
+            body="\n".join(
+                (
+                    f"mode={state.mode.value}",
+                    "source=telegram",
+                )
+            ),
         )
+
+    def _send_notification(self, notification: NotificationMessage) -> None:
+        try:
+            self.notifier.send(notification)
+        except Exception as error:
+            logger.warning(
+                "telegram control 확인 알림 전송에 실패했습니다. subject=%s error=%s",
+                notification.subject,
+                error,
+            )
 
 
 def _decode_payload(body: bytes) -> dict[str, object]:

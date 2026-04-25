@@ -33,6 +33,7 @@ from autotrade.scheduler import SchedulerStateStore
 from autotrade.scheduler import run_scheduled_jobs
 
 logger = logging.getLogger(__name__)
+_CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS = 300.0
 
 
 def _require_aware_datetime(field_name: str, value: datetime) -> None:
@@ -124,6 +125,11 @@ class ScheduledRunner:
         repr=False,
     )
     _last_control_poller_error: str | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _last_control_poller_error_logged_at: datetime | None = field(
         default=None,
         init=False,
         repr=False,
@@ -347,19 +353,23 @@ class ScheduledRunner:
                 self.control_poller()
             except Exception as exc:
                 self._log_control_poller_failure(exc)
-            else:
-                if self._last_control_poller_error is not None:
-                    logger.info("runner control poller가 복구되었습니다.")
-                    self._last_control_poller_error = None
         if self.control_store is None:
             return None
         return self.control_store.load()
 
     def _log_control_poller_failure(self, error: Exception) -> None:
         error_message = str(error) or type(error).__name__
-        if error_message == self._last_control_poller_error:
+        logged_at = self._last_control_poller_error_logged_at
+        now = self.clock()
+        if (
+            error_message == self._last_control_poller_error
+            and logged_at is not None
+            and (now - logged_at).total_seconds()
+            < _CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS
+        ):
             return
         self._last_control_poller_error = error_message
+        self._last_control_poller_error_logged_at = now
         logger.warning(
             "runner control poller 실행에 실패했습니다. error=%s", error_message
         )

@@ -981,6 +981,27 @@ def test_build_notifier_returns_composite_when_telegram_enabled(tmp_path) -> Non
     assert isinstance(notifier.notifiers[1], operations.TelegramNotifier)
 
 
+def test_build_telegram_control_poller_uses_dedicated_no_retry_notifier(
+    tmp_path,
+) -> None:
+    control_store = operations.FileRunnerControlStore(tmp_path / "runner_control.json")
+    telegram_settings = TelegramSettings(
+        enabled=True,
+        bot_token="bot-token",
+        chat_id="-10012345",
+        max_retries=3,
+    )
+
+    poller = operations._build_telegram_control_poller(
+        telegram_settings,
+        control_store=control_store,
+    )
+
+    assert poller is not None
+    assert isinstance(poller.notifier, operations.TelegramNotifier)
+    assert poller.notifier.settings.max_retries == 0
+
+
 def test_is_last_trading_day_of_week_handles_friday_holiday() -> None:
     calendar = operations.KrxRegularSessionCalendar(
         holiday_dates=frozenset({date(2026, 4, 10)})

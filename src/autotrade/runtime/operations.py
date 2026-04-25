@@ -202,7 +202,6 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
         telegram_control_poller = _build_telegram_control_poller(
             settings.telegram,
             control_store=services.control_store,
-            notifier=services.notifier,
         )
         runner = ScheduledRunner(
             jobs=(
@@ -778,14 +777,13 @@ def _build_telegram_control_poller(
     telegram_settings: TelegramSettings,
     *,
     control_store: FileRunnerControlStore,
-    notifier: Notifier,
 ) -> TelegramControlPoller | None:
     if not telegram_settings.enabled:
         return None
     return TelegramControlPoller(
         settings=telegram_settings,
         control_store=control_store,
-        notifier=notifier,
+        notifier=TelegramNotifier(replace(telegram_settings, max_retries=0)),
         clock=lambda: datetime.now(KST),
     )
 

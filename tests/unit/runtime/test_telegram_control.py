@@ -121,9 +121,62 @@ def test_telegram_control_poller_ignores_other_chats_and_advances_offset(
     assert notifier.notifications == []
 
 
+def test_telegram_control_poller_persists_offset_when_ack_notification_fails(
+    tmp_path,
+) -> None:
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 30,
+                            "message": {"chat": {"id": "-100base"}, "text": "/pause"},
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+            headers={},
+        )
+
+    poller = TelegramControlPoller(
+        settings=TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+        ),
+        control_store=control_store,
+        notifier=FailingNotifier(),
+        clock=lambda: datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        transport=transport,
+    )
+
+    poller.poll()
+    poller.poll()
+
+    state = control_store.load()
+    assert state.mode is RunnerControlMode.PAUSED
+    assert state.paused_by == "telegram"
+    assert state.telegram_update_offset == 31
+    second_payload = json.loads(requests[1].body.decode("utf-8"))
+    assert second_payload["offset"] == 31
+
+
 @dataclass(slots=True)
 class RecordingNotifier:
     notifications: list[NotificationMessage] = field(default_factory=list)
 
     def send(self, notification: NotificationMessage) -> None:
         self.notifications.append(notification)
+
+
+@dataclass(slots=True)
+class FailingNotifier:
+    def send(self, notification: NotificationMessage) -> None:
+        raise RuntimeError("telegram send failed")
