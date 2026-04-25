@@ -1,29 +1,33 @@
 # Testing
 
-## 검증 방향
+## Direction
 
-- 단위 테스트: 전략 계약, 리스크 제한, 주문 상태 전이
-- 리플레이 테스트: 과거 시세와 주문 흐름 재현
-- 모의투자: 실주문 전 통합 동작 확인
-- 백테스트: 전략의 장기 성향과 회복력 점검
+- Unit tests: strategy contracts, risk limits, order state transitions.
+- Replay tests: historical price and order-flow reproduction.
+- Paper trading: integration behavior before live orders.
+- Backtests: long-term strategy tendency and drawdown resilience.
 
-## 우선순위
+## Priority
 
-처음에는 순수 로직을 작은 테스트로 고정하고, 이후 데이터와 브로커 연동 범위를 단계적으로 넓힙니다.
+Start with small pure-logic tests, then expand into data and broker integration.
 
-## 모의투자 수동 점검
+## Paper Trading Manual Check
 
-실주문 전 paper 계좌에서는 아래 순서로 최소 점검을 수행합니다.
+Before live trading, run this minimum paper-account check:
 
-1. 환경변수를 세팅하고 paper 계좌 번호, 앱키, 로그 경로가 맞는지 확인한다.
-2. read-only smoke를 먼저 돌려 시세, 잔고, 주문가능수량 조회가 모두 통과하는지 본다.
-3. 매우 작은 수량으로 지정가 주문 1건을 제출하고 정정, 취소가 실제로 접수되는지 확인한다.
-4. 별도 주문 1건은 공격적인 가격으로 제출해 체결을 유도하고, 주문 상태와 보유수량 변화를 함께 확인한다.
-5. stdout 로그, 수동 점검 로그, raw KIS 로그를 서로 대조해 API 응답과 계좌 상태가 일치하는지 확인한다.
+1. Set environment variables; verify paper account, app key, and log path.
+2. Run read-only smoke for quote, balance, and orderable quantity. If a recent
+   order id is available, add `--order-history-order-id <order-id>` to also
+   verify order history parsing.
+3. Submit one tiny limit order; verify modify and cancel are accepted.
+4. Submit one aggressive order to induce fill; verify order state and holdings change.
+5. Cross-check stdout, manual check log, and raw KIS log.
 
-### 판정 기준
+### Pass Criteria
 
-- `manual_paper_check_*.log`에 주문 제출, 정정, 취소, 최종 잔고 조회가 모두 남아 있어야 한다.
-- raw KIS 로그는 `AUTOTRADE_LOG_DIR/kis_raw_YYYYMMDD.log`에 기록되며, 주문 성공 여부는 여기의 `order-cash`, `order-rvsecncl`, `inquire-balance` 응답으로 교차 확인한다.
-- KIS 모의투자 `inquire-daily-ccld`는 주문별 `output1`을 비워서 주는 경우가 있으므로, 체결 확인은 fill 조회만으로 끝내지 않고 보유수량 증가와 취소 불가 응답까지 함께 본다.
-- 체결 유도 주문 뒤 취소 시 `40330000 - 모의투자 정정/취소할 수량이 없습니다.`가 나오고 잔고가 증가했다면, paper 환경에서는 이미 전량 체결된 것으로 본다.
+- `manual_paper_check_*.log` includes order submit, modify, cancel, and final balance lookup.
+- Raw KIS log at `AUTOTRADE_LOG_DIR/kis_raw_YYYYMMDD.log` confirms `order-cash`, `order-rvsecncl`, and `inquire-balance`.
+- KIS paper `inquire-daily-ccld` may omit per-order `output1`; confirm fills with holdings increase and cancel-impossible response.
+- After an aggressive order, `40330000 - 모의투자 정정/취소할 수량이 없습니다.` plus increased holdings means the paper environment treated it as fully filled.
+- Unit broker contract tests include recorded KIS fixtures for quote, holdings,
+  order capacity, and order history endpoint/TR regression detection.

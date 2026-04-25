@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import TypeVar
 
 from autotrade.broker.korea_investment import HttpTransport
 from autotrade.broker.korea_investment import KoreaInvestmentBrokerReader
+from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
+from autotrade.common import ExecutionFill
 from autotrade.common import Holding
 from autotrade.common import OrderCapacity
 from autotrade.common import Quote
@@ -38,6 +41,8 @@ class SmokeReport:
     order_capacity: OrderCapacity | None
     success: bool
     failure: str | None = None
+    order_history_order_id: str | None = None
+    order_history_fills: tuple[ExecutionFill, ...] | None = None
 
 
 def run_read_only_smoke(
@@ -46,11 +51,14 @@ def run_read_only_smoke(
     transport: HttpTransport | None = None,
     clock: Callable[[], datetime] | None = None,
     sleep: Callable[[float], None] | None = None,
+    order_history_order_id: str | None = None,
 ) -> SmokeReport:
     now = clock or (lambda: datetime.now(timezone.utc))
     resolved_sleep = sleep or time.sleep
     started_at = now()
     target_symbol = settings.target_symbols[0]
+    if order_history_order_id is not None:
+        order_history_order_id = order_history_order_id.strip() or None
     broker = KoreaInvestmentBrokerReader(
         settings.broker,
         transport=transport,
@@ -64,6 +72,7 @@ def run_read_only_smoke(
     quote: Quote | None = None
     holdings: tuple[Holding, ...] | None = None
     order_capacity: OrderCapacity | None = None
+    order_history_fills: tuple[ExecutionFill, ...] | None = None
 
     try:
         quote = _run_smoke_step(
@@ -109,6 +118,27 @@ def run_read_only_smoke(
                 detail=f"{order_capacity.symbol}:{order_capacity.max_orderable_quantity}",
             ),
         )
+        if order_history_order_id is not None:
+            order_history_fills = _run_smoke_step(
+                "get_order_history",
+                detail=order_history_order_id,
+                operation=lambda: _get_order_history_fills(
+                    settings,
+                    order_history_order_id=order_history_order_id,
+                    transport=transport,
+                    clock=now,
+                    sleep=resolved_sleep,
+                ),
+                steps=steps,
+                sleep=resolved_sleep,
+            )
+            steps.append(
+                SmokeStep(
+                    name="get_order_history",
+                    status="success",
+                    detail=f"{order_history_order_id}:{len(order_history_fills)}",
+                ),
+            )
         steps.append(SmokeStep(name="smoke", status="success"))
         success = True
         failure = None
@@ -118,6 +148,12 @@ def run_read_only_smoke(
             failed_step = "get_holdings"
         if quote is not None and holdings is not None:
             failed_step = "get_order_capacity"
+        if (
+            order_history_order_id is not None
+            and order_capacity is not None
+            and order_history_fills is None
+        ):
+            failed_step = "get_order_history"
         steps.append(
             SmokeStep(
                 name=failed_step,
@@ -146,7 +182,29 @@ def run_read_only_smoke(
         order_capacity=order_capacity,
         success=success,
         failure=failure,
+        order_history_order_id=order_history_order_id,
+        order_history_fills=order_history_fills,
     )
+
+
+def _get_order_history_fills(
+    settings: AppSettings,
+    *,
+    order_history_order_id: str,
+    transport: HttpTransport | None,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], None],
+) -> tuple[ExecutionFill, ...]:
+    trader = KoreaInvestmentBrokerTrader(
+        replace(settings.broker, hts_id=None),
+        transport=transport,
+        clock=clock,
+        sleep=sleep,
+    )
+    try:
+        return trader.get_fills(order_history_order_id)
+    finally:
+        trader.close()
 
 
 def _run_smoke_step(
@@ -203,6 +261,13 @@ def render_smoke_report(report: SmokeReport) -> str:
             "order_capacity="
             f"{report.order_capacity.symbol}:{report.order_capacity.max_orderable_quantity}"
         )
+    if report.order_history_order_id is not None:
+        fill_count = (
+            "none"
+            if report.order_history_fills is None
+            else str(len(report.order_history_fills))
+        )
+        lines.append(f"order_history={report.order_history_order_id}:{fill_count}")
     if report.failure is not None:
         lines.append(f"failure={report.failure}")
     for step in report.steps:

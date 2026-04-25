@@ -1,134 +1,87 @@
 # AGENTS.md
 
-## Project summary
-This repository contains the automation and validation tooling for AutoTrade.
-Primary goals are correctness, reproducibility, and safe refactoring.
+## Project
+AutoTrade automation/validation tooling. Prioritize correctness, reproducibility, and safe refactoring.
 
 ## Scope
-- You may modify files under `src/`, `tools/`, `tests/`, and `docs/`.
-- Do not edit vendored, generated, or third-party files directly.
-- Do not change CI, dependency versions, or public interfaces unless the task requires it.
+- Editable: `src/`, `tools/`, `tests/`, `docs/`.
+- Do not edit vendored/generated/third-party files.
+- Do not change CI, dependency versions, or public interfaces unless required.
 
-## Required workflow
-1. Read the relevant files before editing.
-2. Make the smallest change that solves the task.
-3. Run focused validation first.
-4. Run broader validation if the focused checks pass.
-5. Summarize what changed, what was validated, and any remaining risk.
-6. Refer docs/workflow.md for detailed flow.
-7. If changes are related to roadmap, update doc/roadmap.md
+## Workflow
+1. Read relevant files before editing.
+2. Make the smallest sufficient change.
+3. Run focused validation first, then broader validation if it passes.
+4. Summarize changes, validation, and remaining risk.
+5. See `docs/workflow.md` for the detailed flow.
+6. If roadmap-related, update `docs/roadmap.md`.
 
-## Multi-agent workflow for large changes
+## Large-Scope Coding Tasks
+Use a 3-role flow before implementation when a coding task spans multiple files/modules, changes shared/core logic, adds behavior, changes architecture/interfaces/dependencies, or likely needs multiple edit/test cycles.
 
-For any large-scope coding task, do not proceed with a single-agent flow.
-You must use the following 3-agent group workflow before implementation begins:
+1. planner/manager: understand context; define scope, affected files, risks, dependencies, implementation steps, and validation.
+2. coder: implement only the approved plan; keep scope minimal; stop if the plan becomes invalid.
+3. review/tester: verify plan match, regressions, scope discipline, and required checks; reject incomplete validation or unrelated changes.
 
-1. planner/manager
-2. coder
-3. review/tester
+Order: planner/manager -> coder -> review/tester. Do not skip planning, self-approve coder work, or finish before review/tester passes.
 
-A task is considered large-scope if it includes one or more of the following:
-- changes across multiple files or modules
-- refactoring of shared/core logic
-- new feature implementation affecting existing behavior
-- architecture, interface, or dependency changes
-- work expected to require multiple edit/test cycles
+Large-task outputs:
+- Before coding: task summary, affected files/modules, implementation steps, risks, validation plan.
+- After coding: review summary, validation commands, pass/fail status, remaining risks/follow-ups.
 
-### Role responsibilities
-
-#### planner/manager
-- Understand the request and relevant codebase context first.
-- Break the task into smaller steps with clear scope boundaries.
-- Identify affected files, risks, dependencies, and validation strategy.
-- Produce an implementation plan before coding starts.
-- Prevent unnecessary scope expansion.
-
-#### coder
-- Implement only the approved plan.
-- Keep changes minimal and scoped to the task.
-- Do not silently change architecture, interfaces, or unrelated logic.
-- If the plan becomes invalid during implementation, stop and send the issue back to planner/manager.
-
-#### review/tester
-- Review correctness, regressions, and scope discipline.
-- Check whether the implementation matches the original plan.
-- Run required lint, type, build, and test commands.
-- Report failures, risks, and missing coverage clearly.
-- Reject completion if validation is incomplete or if unrelated changes were introduced.
-
-### Required execution order
-1. planner/manager creates the plan
-2. coder implements the planned change
-3. review/tester reviews and validates the result
-
-Do not skip planner/manager for large-scope tasks.
-Do not let coder self-approve completion without review/tester validation.
-Do not mark the task complete until review/tester passes the required checks.
-
-### Output requirements for large tasks
-Before coding, planner/manager must provide:
-- task summary
-- affected files/modules
-- implementation steps
-- risk points
-- validation plan
-
-After coding, review/tester must provide:
-- review summary
-- validation commands run
-- pass/fail status
-- remaining risks or follow-ups
-
-## Validation commands
+## Validation
 - Lint: `ruff check .`
 - Format: `ruff format .`
 - Type check: `mypy src/`
 - Unit tests: `pytest tests/unit -q`
 
-## Validation order
-- For small edits, run the nearest relevant test first.
-- For Python code changes, run lint -> type check -> tests in that order.
-- Do not claim success without reporting the exact commands run.
+Rules:
+- Small edits: run the nearest relevant test first.
+- Python changes: lint -> type check -> tests.
+- Report exact commands run; do not claim success without them.
 
-## Architecture constraints
-- Keep parsing, transformation, and I/O layers separated.
-- Do not add business logic to CLI entrypoints.
+## Architecture
+- Keep parsing, transformation, and I/O separated.
+- Keep business logic out of CLI entrypoints.
 - Shared utilities belong in `src/common/`.
-- Avoid cross-module imports that bypass public interfaces.
+- Do not bypass public interfaces with cross-module internal imports.
 
-## Code conventions
-- Prefer small pure functions over large stateful functions.
-- Keep diffs minimal.
-- Preserve existing naming unless there is a strong reason to change it.
-- Add comments only when the reasoning is not obvious from the code.
+## Code Conventions
+- Prefer small pure functions.
+- Keep diffs minimal and names stable unless change is justified.
+- Add comments only for non-obvious reasoning.
 
-## Safety rules
-- Never overwrite user data without an explicit backup path or dry-run mode.
-- For file transforms, prefer deterministic scripts over manual bulk edits.
-- For large JSON/YAML/generated artifacts, modify the generator, not the output.
-- Do not read .env file.
+## Safety
+- Never overwrite user data without explicit backup path or dry-run mode.
+- Prefer deterministic scripts for file transforms.
+- Modify generators, not large JSON/YAML/generated artifacts.
+- Do not read `.env`.
 
-## Common pitfalls
+## Pitfalls
 - Do not edit generated files directly.
-- Do not skip validation because a change “looks small”.
-- Do not mix refactoring with behavior changes in one patch.
-- Do not introduce new dependencies without necessity.
+- Do not skip validation because a change looks small.
+- Do not mix refactoring with behavior changes.
+- Do not add dependencies unless necessary.
 
-## Task-specific references
+## References
 - Architecture: `docs/architecture.md`
 - Coding standards: `docs/coding-standards.md`
-- Testing guide: `docs/testing.md`
+- Testing: `docs/testing.md`
 
-## When blocked
-- Report the exact blocker.
+## When Blocked
+- State the exact blocker.
 - Propose the smallest safe next step.
 - Do not guess hidden requirements.
 
+## Token Saving
+- Be concise.
+- Do not print full files/diffs unless asked.
+- Prefer `rg`.
+- Summarize only relevant test errors.
+
 ## graphify
+Knowledge graph output lives in `graphify-out/`.
 
-This project has a graphify knowledge graph at graphify-out/.
-
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `.venv/bin/python -m graphify update .` to keep the graph current (AST-only, no API cost)
+- Before architecture/codebase answers, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure.
+- If `graphify-out/wiki/index.md` exists, navigate it before raw files.
+- After modifying code files, run `.venv/bin/python -m graphify update .` to refresh the AST-only graph.

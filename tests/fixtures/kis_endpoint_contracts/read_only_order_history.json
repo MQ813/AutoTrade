@@ -1,0 +1,142 @@
+{
+  "clock": "2026-04-24T10:30:00+09:00",
+  "settings": {
+    "provider": "koreainvestment",
+    "api_key": "demo-key",
+    "api_secret": "demo-secret",
+    "account": "12345678-01",
+    "environment": "paper"
+  },
+  "symbol": "069500",
+  "order_price": "95000",
+  "order_id": "0000011960",
+  "responses": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/oauth2/tokenP"
+      },
+      "response": {
+        "access_token": "token-123"
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "tr_id": "FHKST01010100"
+      },
+      "response": {
+        "rt_cd": "0",
+        "output": {
+          "stck_bsop_date": "20260424",
+          "stck_cntg_hour": "103000",
+          "stck_prpr": "98100"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/uapi/domestic-stock/v1/trading/inquire-balance",
+        "tr_id": "VTTC8434R"
+      },
+      "response": {
+        "rt_cd": "0",
+        "output1": [
+          {
+            "pdno": "069500",
+            "hldg_qty": "2",
+            "pchs_avg_pric": "97000",
+            "prpr": "98100"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+        "tr_id": "VTTC8908R"
+      },
+      "response": {
+        "rt_cd": "0",
+        "output": {
+          "ord_psbl_cash": "285000",
+          "nrcvb_buy_qty": "3"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/oauth2/tokenP"
+      },
+      "response": {
+        "access_token": "token-456"
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        "tr_id": "VTTC8001R"
+      },
+      "response": {
+        "rt_cd": "0",
+        "output1": [
+          {
+            "ord_dt": "20260424",
+            "ord_gno_brno": "06010",
+            "odno": "0000011960",
+            "pdno": "069500",
+            "ord_qty": "1",
+            "ord_unpr": "98100",
+            "ord_tmd": "103000",
+            "tot_ccld_qty": "1",
+            "avg_prvs": "98100",
+            "cncl_yn": "N",
+            "ord_dvsn_cd": "00",
+            "rjct_qty": "0"
+          }
+        ],
+        "output2": {
+          "tot_ord_qty": "1",
+          "tot_ccld_qty": "1",
+          "tot_ccld_amt": "98100"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "quote": {
+      "symbol": "069500",
+      "price": "98100",
+      "as_of": "2026-04-24T10:30:00+09:00"
+    },
+    "holdings": [
+      {
+        "symbol": "069500",
+        "quantity": 2,
+        "average_price": "97000",
+        "current_price": "98100"
+      }
+    ],
+    "order_capacity": {
+      "symbol": "069500",
+      "order_price": "95000",
+      "max_orderable_quantity": 3,
+      "cash_available": "285000"
+    },
+    "fills": [
+      {
+        "fill_id": "0000011960:cumulative",
+        "order_id": "0000011960",
+        "symbol": "069500",
+        "quantity": 1,
+        "price": "98100",
+        "filled_at": "2026-04-24T10:30:00+09:00"
+      }
+    ]
+  }
+}

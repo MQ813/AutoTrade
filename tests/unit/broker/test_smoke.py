@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from decimal import Decimal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -104,6 +105,108 @@ def test_run_read_only_smoke_logs_success_and_writes_file(tmp_path) -> None:
 
     rendered = render_smoke_report(report)
     assert "quote=069500:12345.67" in rendered
+
+
+def test_run_read_only_smoke_can_check_order_history_contract(tmp_path) -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): [
+                json_response({"access_token": "token-123"}),
+                json_response({"access_token": "token-456"}),
+            ],
+            ("GET", "/uapi/domestic-stock/v1/quotations/inquire-price"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "stck_bsop_date": "20260411",
+                        "stck_cntg_hour": "090000",
+                        "stck_prpr": "12345.67",
+                    },
+                },
+            ),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-balance"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        {
+                            "pdno": "069500",
+                            "hldg_qty": "1",
+                            "pchs_avg_pric": "9000",
+                            "prpr": "9500",
+                        },
+                    ],
+                },
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output": {
+                        "ord_psbl_cash": "133250",
+                        "nrcvb_buy_qty": "13",
+                    },
+                },
+            ),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        {
+                            "ord_dt": "20260411",
+                            "odno": "0000011960",
+                            "pdno": "069500",
+                            "ord_tmd": "090000",
+                            "tot_ccld_qty": "1",
+                            "avg_prvs": "98100",
+                        }
+                    ],
+                },
+            ),
+        },
+    )
+    settings = AppSettings(
+        broker=BrokerSettings(
+            provider="koreainvestment",
+            api_key="demo-key",
+            api_secret="demo-secret",
+            account="12345678-01",
+            environment="paper",
+        ),
+        target_symbols=("069500",),
+        log_dir=tmp_path / "logs",
+    )
+    fixed_now = datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    report = run_read_only_smoke(
+        settings,
+        transport=transport,
+        clock=lambda: fixed_now,
+        order_history_order_id="0000011960",
+    )
+
+    assert report.success is True
+    assert report.order_history_order_id == "0000011960"
+    assert report.order_history_fills is not None
+    assert len(report.order_history_fills) == 1
+    assert report.order_history_fills[0].price == Decimal("98100")
+    assert [urlsplit(request.url).path for request in transport.requests] == [
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "/uapi/domestic-stock/v1/trading/inquire-balance",
+        "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+        "/oauth2/tokenP",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+    ]
+
+    rendered = render_smoke_report(report)
+    assert "order_history=0000011960:1" in rendered
+    assert "step=get_order_history status=start detail=0000011960" in rendered
+    assert "step=get_order_history status=success detail=0000011960:1" in rendered
 
 
 def test_run_read_only_smoke_records_failure_step(tmp_path) -> None:

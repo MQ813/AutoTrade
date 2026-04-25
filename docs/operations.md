@@ -1,46 +1,52 @@
 # Operations
 
-현재 저장소에는 정규장 운영을 위한 기본 `scheduler/report` 구현이 포함됩니다.
+The repository includes baseline regular-session `scheduler/report` support.
 
-- `scheduler`: 장 시작, 장중, 장마감 작업을 KRX 정규장 캘린더 기준으로 실행합니다.
-- `report`: 실행 결과를 운영 로그, 일일 리포트, 알림 메시지로 변환합니다.
-- `AUTOTRADE_BROKER_ENV=paper`에서는 기본적으로 내부 `PaperBroker`를 사용합니다. KIS 모의투자 계좌에 실제 주문을 보내려면 `AUTOTRADE_PAPER_TRADING_MODE=broker`를 함께 설정해야 합니다.
+- `scheduler`: runs market-open, intraday, and market-close jobs on the KRX regular-session calendar.
+- `report`: turns run results into operation logs, daily reports, and alerts.
+- `AUTOTRADE_BROKER_ENV=paper` uses internal `PaperBroker` by default. To send real KIS paper-account orders, also set `AUTOTRADE_PAPER_TRADING_MODE=broker`.
 
-## 소액 실전 운영 기준
+## Small Live-Operation Rules
 
-- 실전 환경에서는 `AUTOTRADE_BROKER_ENV=live`와 함께 `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`을 명시해 자동매매가 사용할 최대 운영 자금을 제한합니다.
-- KIS 모의투자 실주문 테스트에서는 `AUTOTRADE_BROKER_ENV=paper`, `AUTOTRADE_PAPER_TRADING_MODE=broker` 조합을 사용합니다.
-- 주문/체결 알림은 `report` 모듈의 `build_order_alert`, `build_fill_alert`, `publish_order_alert`, `publish_fill_alert`로 생성합니다.
-- `AUTOTRADE_TELEGRAM_ENABLED=true`이면 공식 CLI인 `python -m autotrade.cli ...`가 파일 notifier와 Telegram notifier를 함께 연결해 주문/체결/일일 리포트를 발행합니다.
-- `python -m autotrade.cli weekly-review`는 기본적으로 저장소 루트의 `.env`를 읽고, 텔레그램이 켜져 있으면 주간 리뷰를 파일로 저장한 뒤 Telegram으로 발행합니다.
-- 텔레그램 채널은 `AUTOTRADE_TELEGRAM_CHAT_ID`를 기본값으로 쓰고, `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID`, `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`로 심각도별 분리를 선택할 수 있습니다.
-- `python -m autotrade.cli run-once`는 실행 시작 시 KIS에서 전략 주기에 맞는 바를 수집해 `AUTOTRADE_LOG_DIR/bars`에 저장한 뒤, 전략 신호, 리스크 검증, 주문 제출, 주문/체결 알림 발행을 한 번 실행합니다.
-- `python -m autotrade.cli run-continuous`는 `scheduler`를 함께 구동해 `next_run_at` 기준으로 대기/재개하며, `AUTOTRADE_LOG_DIR/scheduler_state.json`을 사용해 재시작 뒤에도 같은 슬롯을 중복 실행하지 않습니다.
-- `run-continuous`의 `market_close` 단계는 일일 실행 리포트와 일일 점검 리포트를 남기고, 해당 거래일이 그 주의 마지막 거래일이면 주간 리뷰도 같은 흐름에서 생성합니다.
-- 공식 CLI는 `src/autotrade/cli.py`에 있습니다. `src` 레이아웃 체크아웃에서 패키지를 따로 설치하지 않았다면 `PYTHONPATH=src python -m autotrade.cli ...`로 실행하고, 저장소 로컬 실행 호환 경로로 `python tools/operations.py ...`도 계속 사용할 수 있습니다.
-- 공식 CLI는 기본적으로 저장소 루트의 `.env`를 읽고, 템플릿은 `docs/autotrade.env.example`에 있습니다.
-- 공식 CLI의 기본 입력 경로는 `AUTOTRADE_LOG_DIR/bars`이고, 기본 산출물은 `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`, `AUTOTRADE_LOG_DIR/scheduler_state.json`입니다.
-- 공식 CLI 종료 코드는 `0=성공`, `1=운영 실패 또는 safe stop`, `2=설정/입력 오류`로 통일합니다.
-- `execution_state.json`, `scheduler_state.json`, `intraday_risk_state.json`은 임시 파일 + replace 방식으로 저장하며, 손상된 파일을 읽으면 `*.corrupt-*`로 백업한 뒤 빈 상태로 초기화합니다.
-- `--paper-cash`는 `AUTOTRADE_PAPER_TRADING_MODE=simulate`일 때만 의미가 있습니다.
-- 일일 점검 체크리스트는 `python tools/daily_inspection.py`로 생성하고, 주간 리뷰 템플릿은 `python tools/weekly_review.py`로 생성합니다.
-- 위 스크립트는 `AUTOTRADE_LOG_DIR` 아래에 텍스트 산출물을 남기며, 실제 운영 실행기나 외부 알림 채널은 상위 orchestration에서 연결합니다.
+- Live mode requires `AUTOTRADE_BROKER_ENV=live` and `AUTOTRADE_RISK_MAX_OPERATING_CAPITAL`.
+- KIS paper real-order tests use `AUTOTRADE_BROKER_ENV=paper` + `AUTOTRADE_PAPER_TRADING_MODE=broker`.
+- Order/fill alerts come from `build_order_alert`, `build_fill_alert`, `publish_order_alert`, and `publish_fill_alert`.
+- `AUTOTRADE_TELEGRAM_ENABLED=true` makes `python -m autotrade.cli ...` fan out to file and Telegram notifiers.
+- `weekly-review` reads repo-root `.env` by default, saves the weekly review, and sends Telegram if enabled.
+- Telegram defaults to `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error channels can use `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID` and `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`.
 
-## 실행 순서
+## CLI Behavior
+
+- `run-once`: collects bars into `AUTOTRADE_LOG_DIR/bars`, then runs signals, risk checks, orders, and order/fill alerts once.
+- `run-continuous`: runs the scheduler, sleeps until `next_run_at`, and uses `AUTOTRADE_LOG_DIR/scheduler_state.json` to avoid duplicate slots after restart.
+- `market_close`: writes daily run/inspection reports and, on the last trading day of the week, a weekly review.
+- Official CLI: `src/autotrade/cli.py`. In a local `src` checkout, use `PYTHONPATH=src python -m autotrade.cli ...`; compatibility path `python tools/operations.py ...` remains available.
+- CLI reads repo-root `.env` by default; template: `docs/autotrade.env.example`.
+- Default inputs/outputs: `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, `execution_state.json`, `scheduler_state.json`.
+- Exit codes: `0=success`, `1=operation failure or safe stop`, `2=config/input error`.
+- `execution_state.json`, `scheduler_state.json`, and `intraday_risk_state.json` are saved by temp file + replace; corrupt files are backed up as `*.corrupt-*` and reset.
+- `--paper-cash` only applies when `AUTOTRADE_PAPER_TRADING_MODE=simulate`.
+- `tools/daily_inspection.py` and `tools/weekly_review.py` create text artifacts under `AUTOTRADE_LOG_DIR`; orchestration connects live executors and external alerts.
+
+## Run Order
 
 1. `cp docs/autotrade.env.example .env`
-2. `.env` 안의 계좌, 종목, 로그 경로 값을 실제 환경에 맞게 수정합니다.
-3. 로컬 체크아웃에서 패키지를 설치하지 않았다면 `PYTHONPATH=src python -m autotrade.cli run-once`를 실행합니다.
-4. stdout 한글 로그와 `AUTOTRADE_LOG_DIR/bars`, `AUTOTRADE_LOG_DIR/notifications.jsonl`, `AUTOTRADE_LOG_DIR/execution_state.json`을 확인합니다.
+2. Fill account, symbols, and log path in `.env`.
+3. If not installed, run `PYTHONPATH=src python -m autotrade.cli run-once`.
+4. Check Korean stdout logs plus `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, and `execution_state.json`.
 
-필요하면 `PYTHONPATH=src python -m autotrade.cli run-once --env-file /path/to/custom.env`로 다른 `.env` 파일을 지정할 수 있습니다.
-지속 실행이 필요하면 `PYTHONPATH=src python -m autotrade.cli run-continuous`를 사용합니다.
-장전 준비만 따로 실행할 때는 `PYTHONPATH=src python -m autotrade.cli market-open`을 사용합니다.
-장종료 정리만 따로 실행할 때는 `PYTHONPATH=src python -m autotrade.cli market-close`를 사용합니다.
-주간 리뷰만 따로 발행할 때는 `PYTHONPATH=src python -m autotrade.cli weekly-review --env-file /path/to/custom.env`를 사용할 수 있습니다.
-셸 설정을 바꾸기 싫다면 호환 경로인 `python tools/operations.py ...`도 계속 사용할 수 있습니다.
+Useful commands:
 
-## 필수 설정
+- Custom env: `PYTHONPATH=src python -m autotrade.cli run-once --env-file /path/to/custom.env`
+- Continuous: `PYTHONPATH=src python -m autotrade.cli run-continuous`
+- Market open only: `PYTHONPATH=src python -m autotrade.cli market-open`
+- Market close only: `PYTHONPATH=src python -m autotrade.cli market-close`
+- Weekly review only: `PYTHONPATH=src python -m autotrade.cli weekly-review --env-file /path/to/custom.env`
+- Compatibility: `python tools/operations.py ...`
+
+## Settings
+
+Required:
 
 - `AUTOTRADE_BROKER_ENV`
 - `AUTOTRADE_BROKER_API_KEY`
@@ -49,7 +55,7 @@
 - `AUTOTRADE_TARGET_SYMBOLS`
 - `AUTOTRADE_LOG_DIR`
 
-## 선택 설정
+Optional:
 
 - `AUTOTRADE_PAPER_TRADING_MODE`
 - `AUTOTRADE_TELEGRAM_ENABLED`
@@ -60,36 +66,35 @@
 - `AUTOTRADE_TELEGRAM_MAX_RETRIES`
 - `AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS`
 
-## 장 시작 전
+## Before Open
 
-- 설정과 환경변수를 확인합니다.
-- 08:00 장전 준비 slot에서 전략 입력 바 데이터 보유 상태를 확인하고, 비어 있거나 뒤처진 구간이 있으면 최신화합니다.
-- 계좌, 주문 가능 상태, 데이터 최신성을 점검합니다.
-- 당일 운영 대상 종목과 전략 파라미터를 확인합니다.
-- 현재가를 기준으로 심볼별 전략 신호와 예상 매수/매도 수량을 프리뷰합니다.
-- 장전 준비 phase가 끝나면 점검 요약을 알림 채널과 텔레그램으로 발행합니다.
+- Check settings and environment variables.
+- At the 08:00 pre-open slot, verify and refresh strategy input bars.
+- Check account, orderability, and data freshness.
+- Confirm target symbols and strategy parameters.
+- Preview symbol-level signals and expected buy/sell quantities from current price.
+- Publish the preparation summary to notifier/Telegram.
 
-## 장중
+## Intraday
 
-- 주문과 체결 상태를 주기적으로 확인합니다.
-- 예외와 경고를 기록합니다.
-- 리스크 제한 조건을 초과하면 자동 진입을 멈춥니다.
-- 장중 작업 주기는 `SchedulerConfig.intraday_interval`로 제어합니다.
-- 실행 결과는 작업별 성공/실패와 상세 메시지로 기록됩니다.
-- 실패한 job이 발생하면 runner는 알림을 발행한 뒤 안전 정지하고, 재기동 시 `scheduler_state.json` 기준으로 다음 미실행 슬롯부터 이어갑니다.
+- Periodically check order/fill state.
+- Record exceptions and warnings.
+- Stop automatic entries if risk limits are exceeded.
+- Control cadence with `SchedulerConfig.intraday_interval`.
+- Record each job success/failure and details.
+- On a failed job, publish an alert, safe-stop, and resume from the next unrun slot using `scheduler_state.json`.
 
-## 장마감
+## Market Close
 
-- 당일 주문, 체결, 잔고 상태를 정리합니다.
-- 리포트를 남깁니다.
-- 다음 거래일을 위한 점검 항목을 남깁니다.
-- 장마감 이후에는 일일 실행 리포트와 알림 메시지를 생성할 수 있습니다.
+- Summarize orders, fills, and holdings.
+- Write reports and next-trading-day checklist items.
+- Generate daily run report and alerts after close.
 
-## 운영 산출물
+## Artifacts
 
-- 실행 로그: 작업별 phase, 예정 시각, 성공/실패, 상세 메시지를 저장합니다.
-- 일일 리포트: 장 시작, 장중, 장마감별 작업 수와 실패 수를 요약합니다.
-- 알림: 실패가 있으면 `error`, 실행이 없으면 `warning`, 전부 성공이면 `info` 수준으로 발행합니다.
-- 텔레그램 알림: `429`, `5xx`, 네트워크 오류에는 재시도하고, 장문 메시지는 Telegram 제한 길이에 맞춰 분할합니다.
-- 일일 점검 리포트: 장 시작 전, 장중, 장마감 후 점검 항목을 `passed/failed/pending` 상태로 기록합니다.
-- 주간 리뷰 문서: 일일 실행 결과와 점검 상태를 주간 단위로 요약하고, 운영 회고 프롬프트를 남깁니다.
+- Run log: phase, scheduled time, success/failure, details.
+- Daily report: counts and failures by open/intraday/close phase.
+- Alerts: `error` on failure, `warning` if nothing ran, otherwise `info`.
+- Telegram: retries `429`, `5xx`, and network errors; splits long messages.
+- Daily inspection: pre-open, intraday, and post-close checks as `passed/failed/pending`.
+- Weekly review: weekly summary of daily run and inspection results plus retrospection prompt.

@@ -1,59 +1,53 @@
 # Development Workflow
 
-이 문서는 AutoTrade 저장소에서 변경 작업을 진행할 때 따르는 기본 개발 흐름을 정리합니다.
-모든 단계는 검증 게이트를 거치며, 실패하면 실패 이유를 기록한 뒤 가장 가까운 안전한 단계로 돌아가 다시 시도합니다.
+Use this flow for AutoTrade changes. Each stage has a validation gate; on failure, record the reason and return to the nearest safe stage.
 
 ```mermaid
 flowchart TD
-    A[시작<br/>작업 요청 수신] --> B[요구사항 정리<br/>목표, 범위, 완료 조건 정의]
-    B --> C{검증<br/>요구사항과 완료 조건이<br/>충분히 명확한가?}
-    C -->|아니오| C1[실패 이유 기록<br/>요구사항 누락<br/>범위 모호함<br/>완료 조건 불명확] --> B
-    C -->|예| D[관련 문서와 코드 읽기<br/>AGENTS.md, docs/, 영향 모듈 확인]
-    D --> E{검증<br/>영향 파일, 모듈 경계,<br/>제약 사항을 파악했는가?}
-    E -->|아니오| E1[실패 이유 기록<br/>관련 파일 미확인<br/>아키텍처 경계 미파악<br/>검증 기준 누락] --> D
-    E -->|예| F{큰 변경인가?<br/>여러 파일 또는 모듈 영향<br/>공유 로직 수정<br/>기능 추가<br/>반복 수정 예상}
-    F -->|예| G[planner/manager 계획 수립<br/>작업 요약<br/>영향 파일<br/>구현 단계<br/>리스크<br/>검증 계획]
-    G --> H{검증<br/>계획이 최소 범위이며<br/>검증 가능하게 나뉘었는가?}
-    H -->|아니오| H1[실패 이유 기록<br/>범위 과다<br/>단계 불명확<br/>검증 계획 부족] --> G
-    H -->|예| I[coder 구현<br/>승인된 계획 범위만 수정]
-    F -->|아니오| I
-    I --> J{검증<br/>최소 변경 유지<br/>모듈 경계 준수<br/>불필요한 인터페이스 변경 없음?}
-    J -->|아니오| J1[실패 이유 기록<br/>범위 확장<br/>경계 위반<br/>불필요한 리팩터링] --> D
-    J -->|예| K[가까운 검증 실행<br/>관련 단위 테스트 또는 문서 검토]
-    K --> L{검증 통과?}
-    L -->|아니오| L1[실패 이유 기록<br/>재현 테스트 실패<br/>동작 불일치<br/>문서 흐름 오류] --> I
-    L -->|예| M{코드 변경인가?}
-    M -->|예| N[정적 검증 실행<br/>ruff check .<br/>mypy src/]
-    N --> O{검증 통과?}
-    O -->|아니오| O1[실패 이유 기록<br/>lint 오류<br/>type 오류] --> I
-    O -->|예| P[광범위 검증 실행<br/>pytest tests/unit -q]
-    P --> R{검증 통과?}
-    R -->|아니오| R1[실패 이유 기록<br/>회귀 발생<br/>가정 오류<br/>테스트 보강 필요] --> I
-    R -->|예| Q{큰 변경인가?}
-    M -->|아니오| N1[수동 검증 실행<br/>흐름 정확성<br/>명령 정확성<br/>규칙 일치 여부 확인]
-    N1 --> O2{검증 통과?}
-    O2 -->|아니오| O3[실패 이유 기록<br/>문서 불일치<br/>명령 오류<br/>근거 부족] --> I
-    O2 -->|예| Q
-    Q -->|예| V[review/tester 검토 및 검증<br/>계획 부합성<br/>회귀 여부<br/>검증 누락 여부 확인]
-    V --> W{검증<br/>계획 준수<br/>검증 완료<br/>관련 없는 변경 없음?}
-    W -->|아니오| W1[실패 이유 기록<br/>계획 이탈<br/>검증 미완료<br/>불필요한 변경 포함] --> G
-    W -->|예| T[작업 요약 작성<br/>변경 내용<br/>검증 결과<br/>남은 리스크]
-    Q -->|아니오| T
-    T --> U[완료]
+    A[Start<br/>request received] --> B[Clarify goal, scope, done criteria]
+    B --> C{Clear enough?}
+    C -->|No| B1[Record gap<br/>missing requirement/scope/done criteria] --> B
+    C -->|Yes| D[Read AGENTS.md, docs, affected code]
+    D --> E{Files, boundaries, constraints known?}
+    E -->|No| D1[Record gap<br/>files/boundaries/validation missing] --> D
+    E -->|Yes| F{Large change?}
+    F -->|Yes| G[planner/manager plan<br/>summary/files/steps/risks/validation]
+    G --> H{Plan minimal and testable?}
+    H -->|No| G1[Record issue<br/>scope too broad/steps unclear/checks weak] --> G
+    H -->|Yes| I[coder implements approved scope]
+    F -->|No| I
+    I --> J{Scope and boundaries preserved?}
+    J -->|No| D2[Record issue<br/>scope creep/boundary violation/refactor drift] --> D
+    J -->|Yes| K[Run nearest validation]
+    K --> L{Pass?}
+    L -->|No| I1[Record failure<br/>test/doc/assumption mismatch] --> I
+    L -->|Yes| M{Code changed?}
+    M -->|Yes| N[Run ruff check .<br/>mypy src/]
+    N --> O{Pass?}
+    O -->|No| I2[Record lint/type failure] --> I
+    O -->|Yes| P[Run pytest tests/unit -q]
+    P --> Q{Pass?}
+    Q -->|No| I3[Record regression/assumption/coverage gap] --> I
+    Q -->|Yes| R{Large change?}
+    M -->|No| S[Manual doc validation<br/>flow, commands, project rules]
+    S --> T{Pass?}
+    T -->|No| I4[Record doc mismatch/command error/weak basis] --> I
+    T -->|Yes| R
+    R -->|Yes| U[review/tester verifies plan, regressions, checks]
+    U --> V{Review passes?}
+    V -->|No| G2[Record plan drift/missing checks/unrelated change] --> G
+    V -->|Yes| W[Summarize changes, validation, risks]
+    R -->|No| W
+    W --> X[Done]
 ```
 
 ## Validation Rules
 
-- 모든 변경은 먼저 가장 가까운 관련 범위를 검증합니다.
-- Python 코드 변경은 기본적으로 `ruff check .` -> `mypy src/` -> `pytest tests/unit -q` 순서로 검증합니다.
-- 문서 전용 변경은 자동 검증이 없을 수 있으므로, 흐름 정확성, 명령 정확성, 프로젝트 규칙 일치 여부를 수동으로 확인하고 요약에 명시합니다.
-- 실패 이유는 단순히 "실패"로 남기지 않고, 어떤 가정이 틀렸는지와 어느 단계로 되돌아가야 하는지를 함께 기록합니다.
+- Validate the nearest relevant scope first.
+- Python changes: `ruff check .` -> `mypy src/` -> `pytest tests/unit -q`.
+- Docs-only changes may lack automatic checks; manually verify flow accuracy, command accuracy, and project-rule consistency, then state that in the summary.
+- Record why a failure happened and which stage to revisit.
 
 ## Large-Change Gate
 
-- 여러 파일 또는 모듈을 건드리는 변경
-- 공유 또는 핵심 로직을 수정하는 변경
-- 기존 동작에 영향을 줄 수 있는 기능 추가
-- 여러 차례 구현과 검증 반복이 예상되는 변경
-
-위 조건 중 하나라도 해당하면 `planner/manager -> coder -> review/tester` 순서를 반드시 사용합니다.
+Use `planner/manager -> coder -> review/tester` when a change touches multiple files/modules, shared/core logic, existing behavior, or likely needs multiple implementation/validation cycles.
