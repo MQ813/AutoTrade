@@ -13,6 +13,7 @@ from autotrade.report import NotificationDeliveryError
 from autotrade.report import NotificationMessage
 from autotrade.report import TelegramNotifier
 from autotrade.report.notifiers import TelegramHttpResponse
+import autotrade.report.notifiers as report_notifiers
 from autotrade.config import TelegramSettings
 
 
@@ -175,3 +176,59 @@ def test_telegram_notifier_splits_long_messages() -> None:
     ]
     assert all(payload["chat_id"] == "-100base" for payload in decoded_payloads)
     assert all(len(payload["text"]) <= 4096 for payload in decoded_payloads)
+
+
+def test_telegram_notifier_localizes_message_and_formats_symbol_names(
+    monkeypatch,
+) -> None:
+    report_notifiers._symbol_name_map.cache_clear()
+    monkeypatch.setattr(
+        report_notifiers,
+        "_load_symbol_name_map",
+        lambda: {"005930": "삼성전자", "069500": "KODEX 200"},
+    )
+
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps({"ok": True, "result": {"message_id": 1}}).encode("utf-8"),
+            headers={},
+        )
+
+    notifier = TelegramNotifier(
+        TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+        ),
+        transport=transport,
+    )
+
+    notifier.send(
+        NotificationMessage(
+            created_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+            severity=AlertSeverity.WARNING,
+            subject="AutoTrade order 069500 [CANCELED]",
+            body="\n".join(
+                (
+                    "symbol=069500",
+                    "status=CANCELED",
+                    "targets=069500,005930",
+                    "reason=market close entry restriction is active",
+                )
+            ),
+        )
+    )
+
+    payload = json.loads(requests[0].body.decode("utf-8"))
+    assert "[경고] 주문 알림 KODEX 200(069500) [취소됨]" in payload["text"]
+    assert "생성 시각: 2026-04-10T09:00:00+09:00" in payload["text"]
+    assert "종목: KODEX 200(069500)" in payload["text"]
+    assert "상태: 취소됨" in payload["text"]
+    assert "대상 종목: KODEX 200(069500), 삼성전자(005930)" in payload["text"]
+    assert "사유: 장 마감 신규 진입 제한 활성화" in payload["text"]
+
+    report_notifiers._symbol_name_map.cache_clear()

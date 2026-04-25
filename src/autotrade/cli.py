@@ -63,6 +63,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_continuous_parser.set_defaults(handler=operations._handle_run_continuous)
 
+    control_parser = subparsers.add_parser(
+        "control",
+        help="실행 중인 run-continuous runner를 제어합니다.",
+    )
+    control_subparsers = control_parser.add_subparsers(dest="control_command")
+    control_pause_parser = control_subparsers.add_parser(
+        "pause",
+        help="run-continuous runner를 일시정지합니다.",
+    )
+    _add_control_arguments(control_pause_parser)
+    control_pause_parser.set_defaults(handler=operations._handle_control_pause)
+    control_resume_parser = control_subparsers.add_parser(
+        "resume",
+        help="일시정지된 run-continuous runner를 재개합니다.",
+    )
+    _add_control_arguments(control_resume_parser)
+    control_resume_parser.set_defaults(handler=operations._handle_control_resume)
+
     market_open_parser = subparsers.add_parser(
         "market-open",
         help="장전 준비 점검만 실행합니다.",
@@ -269,6 +287,15 @@ def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
             "AUTOTRADE_PAPER_TRADING_MODE=simulate 일 때만 내부 PaperBroker "
             "초기 현금을 수동 지정합니다. 지정하지 않으면 KIS paper 주문가능현금을 사용합니다."
         ),
+    )
+
+
+def _add_control_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
     )
 
 

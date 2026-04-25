@@ -246,12 +246,15 @@ AutoTrade/
 - `scheduler`는 장 시작/장중/장마감 슬롯과 중복 방지 상태를 제공한다.
 - 운영 리포트와 주간 리뷰 모델/렌더러는 준비되어 있다.
 - 파일 notifier와 Telegram notifier가 연결되어 있다.
+- `run-continuous`는 CLI/Telegram 기반 pause/resume 제어 상태를 감지한다.
 
 #### 8.8.1 24시간 운영 오케스트레이션
 
 장시간 프로세스가 다음 실행 시각을 계산하고 재시작 후 중복 없이 이어가야 한다. 현재 safe stop 경로도 daily report와 다음 거래일 준비 산출물을 남긴다.
 
 완료.
+
+추가 운영 제어: `runner_control.json` 기반 pause/resume을 지원한다. pause는 실행 중인 job을 중단하지 않고 이후 scheduler job 시작을 막는다. resume은 전략 바 보충 수집, 미체결 주문/체결 sync-only 처리, pause window에 포함된 장마감 정리를 1회 수행한 뒤 resume 시각 이전 scheduler 슬롯을 건너뛴다. Telegram 제어는 기본 chat id의 `/pause`, `/resume`만 허용한다.
 
 #### 8.8.2 장 시작 전 준비
 

@@ -19,7 +19,7 @@ flowchart TD
     I --> J
     J --> K[Build LiveCycleRuntime]
     K --> L[Build MarketCloseRuntime]
-    L --> M[Build ScheduledRunner]
+    L --> M[Build ScheduledRunner<br/>with runner_control + Telegram control]
     M --> N[Register jobs<br/>market_open_prepare<br/>live_cycle<br/>market_close_cleanup]
     N --> O[runner.run_forever]
     O --> P{Runner status}
@@ -32,9 +32,15 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[run_forever loop] --> B[run_once]
-    B --> C[Load scheduler_state for trading day]
+    B --> B1{runner_control paused?}
+    B1 -->|Yes| B2[Wait and poll CLI/Telegram control]
+    B2 --> B3{resumed?}
+    B3 -->|No| B2
+    B3 -->|Yes| B4[Run resume maintenance<br/>data catch-up + sync + missed close cleanup]
+    B4 --> C
+    B1 -->|No| C[Load scheduler_state for trading day]
     C --> D[Find due jobs up to now]
-    D --> E[Run jobs for unrun slots]
+    D --> E[Run jobs for unrun slots<br/>skip slots <= resumed_at after pause]
     E --> F[Save scheduler_state]
     F --> G[Write job_history/run_log]
     G --> H{Any failed job?}
@@ -44,6 +50,24 @@ flowchart TD
     H -->|Yes| L[Run safe-stop cleanup]
     L --> M[Publish safe-stop alert]
     M --> N[RunnerStatus.SAFE_STOP]
+```
+
+## 2.1 Control Commands
+
+```mermaid
+flowchart TD
+    A[CLI control pause/resume<br/>or Telegram /pause /resume] --> B[Update runner_control.json]
+    B --> C[run-continuous polls during sleep]
+    C --> D{paused?}
+    D -->|Yes| E[Do not start later scheduler jobs]
+    E --> F{resume observed?}
+    F -->|Yes| G[Refresh bars]
+    G --> H[Sync open orders/fills only]
+    H --> I{pause crossed market close?}
+    I -->|Yes| J[Run market_close_cleanup once<br/>timestamp=missed close]
+    I -->|No| K[Continue scheduler]
+    J --> K
+    K --> L[Skip delayed trading slots<br/>scheduled_at <= resumed_at]
 ```
 
 ## 3. Phases and Artifacts

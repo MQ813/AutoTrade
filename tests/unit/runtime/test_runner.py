@@ -5,13 +5,16 @@ from dataclasses import field
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
+import logging
 
 from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
 from autotrade.report import NotificationMessage
 from autotrade.runtime import RunnerStatus
+from autotrade.runtime import ResumeContext
 from autotrade.runtime.runner import SafeStopContext
 from autotrade.runtime import ScheduledRunner
+from autotrade.runtime.control import FileRunnerControlStore
 from autotrade.scheduler import FileSchedulerStateStore
 from autotrade.scheduler import MarketSessionPhase
 from autotrade.scheduler import ScheduledJob
@@ -207,6 +210,135 @@ def test_scheduled_runner_runs_safe_stop_handler_on_runner_exception(
     assert contexts[0].failures == ()
     assert len(contexts[0].runs) == 1
     assert "cleanup_detail=cleanup_done" in notifier.notifications[0].body
+
+
+def test_scheduled_runner_pauses_resumes_and_skips_paused_slots(tmp_path) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    clock = AdjustableClock(datetime(2026, 4, 10, 9, 0, tzinfo=KST))
+    calls: list[datetime] = []
+    resume_contexts: list[ResumeContext] = []
+    sleep_calls = 0
+
+    def sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            control_store.pause(
+                timestamp=datetime(2026, 4, 10, 9, 5, tzinfo=KST),
+                source="cli",
+            )
+            clock.current = datetime(2026, 4, 10, 9, 5, tzinfo=KST)
+            return
+        if sleep_calls == 2:
+            control_store.resume(
+                timestamp=datetime(2026, 4, 10, 10, 15, tzinfo=KST),
+                source="cli",
+            )
+            clock.current = datetime(2026, 4, 10, 10, 15, tzinfo=KST)
+            return
+        clock.current = clock.current + timedelta(seconds=seconds)
+
+    runner = ScheduledRunner(
+        jobs=(
+            ScheduledJob(
+                name="live_cycle",
+                phase=MarketSessionPhase.INTRADAY,
+                handler=lambda context: calls.append(context.scheduled_at) or "ok",
+            ),
+        ),
+        state_store=state_store,
+        notifier=RecordingNotifier(),
+        clock=clock,
+        sleep=sleep,
+        control_store=control_store,
+        control_poll_interval_seconds=60,
+        resume_handler=lambda context: resume_contexts.append(context) or "resumed",
+    )
+
+    result = runner.run_forever(max_iterations=2)
+
+    assert result.status is RunnerStatus.COMPLETED
+    assert calls == []
+    assert len(resume_contexts) == 1
+    assert resume_contexts[0].paused_at == datetime(2026, 4, 10, 9, 5, tzinfo=KST)
+    assert resume_contexts[0].resumed_at == datetime(2026, 4, 10, 10, 15, tzinfo=KST)
+    assert state_store.load().is_executed(
+        job_name="live_cycle",
+        phase=MarketSessionPhase.INTRADAY,
+        scheduled_at=datetime(2026, 4, 10, 9, 30, tzinfo=KST),
+    )
+    assert state_store.load().is_executed(
+        job_name="live_cycle",
+        phase=MarketSessionPhase.INTRADAY,
+        scheduled_at=datetime(2026, 4, 10, 10, 0, tzinfo=KST),
+    )
+
+
+def test_scheduled_runner_safe_stops_when_resume_maintenance_fails(
+    tmp_path,
+) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    control_store.pause(timestamp=datetime(2026, 4, 10, 9, 0, tzinfo=KST), source="cli")
+    clock = AdjustableClock(datetime(2026, 4, 10, 9, 5, tzinfo=KST))
+    notifier = RecordingNotifier()
+
+    def sleep(seconds: float) -> None:
+        control_store.resume(
+            timestamp=datetime(2026, 4, 10, 9, 10, tzinfo=KST),
+            source="cli",
+        )
+        clock.current = datetime(2026, 4, 10, 9, 10, tzinfo=KST)
+
+    runner = ScheduledRunner(
+        jobs=(),
+        state_store=state_store,
+        notifier=notifier,
+        clock=clock,
+        sleep=sleep,
+        control_store=control_store,
+        control_poll_interval_seconds=60,
+        resume_handler=lambda context: (_ for _ in ()).throw(
+            RuntimeError("maintenance failed")
+        ),
+    )
+
+    result = runner.run_forever(max_iterations=1)
+
+    assert result.status is RunnerStatus.SAFE_STOP
+    assert result.stop_reason == "maintenance failed"
+    assert notifier.notifications[0].subject == (
+        "AutoTrade runner safe stop [resume_maintenance_failure]"
+    )
+
+
+def test_scheduled_runner_logs_control_poller_failure_without_traceback(
+    tmp_path,
+    caplog,
+) -> None:
+    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    runner = ScheduledRunner(
+        jobs=(),
+        state_store=state_store,
+        notifier=RecordingNotifier(),
+        control_store=control_store,
+        control_poller=lambda: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+    caplog.set_level(logging.WARNING, logger="autotrade.runtime.runner")
+
+    runner._poll_and_load_control_state()
+    runner._poll_and_load_control_state()
+
+    records = [
+        record
+        for record in caplog.records
+        if "runner control poller 실행에 실패했습니다." in record.message
+    ]
+    assert len(records) == 1
+    assert "error=network down" in records[0].message
+    assert records[0].exc_info is None
 
 
 @dataclass(slots=True)

@@ -46,7 +46,10 @@ from autotrade.report.operations import write_weekly_review_report
 from autotrade.report.notifiers import CompositeNotifier
 from autotrade.report.notifiers import FileNotifier
 from autotrade.report.notifiers import NotificationDeliveryError
+from autotrade.report.notifiers import TelegramHttpRequest
+from autotrade.report.notifiers import TelegramHttpResponse
 from autotrade.report.notifiers import TelegramNotifier
+from autotrade.report.notifiers import telegram_http_transport
 
 __all__ = [
     "AlertSeverity",
@@ -68,6 +71,8 @@ __all__ = [
     "NotificationMessage",
     "Notifier",
     "TelegramNotifier",
+    "TelegramHttpRequest",
+    "TelegramHttpResponse",
     "ReportLogEntry",
     "WeeklyReviewDaySummary",
     "WeeklyReviewReport",
@@ -98,4 +103,5 @@ __all__ = [
     "write_daily_run_report",
     "write_run_log",
     "write_weekly_review_report",
+    "telegram_http_transport",
 ]

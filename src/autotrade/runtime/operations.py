@@ -101,6 +101,9 @@ from autotrade.runtime.operation_flows import (
 from autotrade.runtime.operation_flows import (
     run_market_close_flow as _run_market_close_flow_impl,
 )
+from autotrade.runtime.operation_flows import (
+    run_resume_maintenance as _run_resume_maintenance_impl,
+)
 from autotrade.runtime.operation_services import OperationServices
 from autotrade.runtime.operation_services import (
     build_broker_clients as _build_broker_clients_impl,
@@ -115,8 +118,12 @@ from autotrade.runtime.operation_services import (
 from autotrade.runtime.operation_services import (
     build_weekly_review_notifier as _build_weekly_review_notifier_impl,
 )
+from autotrade.runtime.control import FileRunnerControlStore
+from autotrade.runtime.control import RunnerControlState
+from autotrade.runtime.runner import ResumeContext
 from autotrade.runtime.runner import RunnerStatus
 from autotrade.runtime.runner import ScheduledRunner
+from autotrade.runtime.telegram_control import TelegramControlPoller
 from autotrade.strategy import StrategyKind
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -192,6 +199,11 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
             notifier=services.notifier,
             state_store=services.state_store,
         )
+        telegram_control_poller = _build_telegram_control_poller(
+            settings.telegram,
+            control_store=services.control_store,
+            notifier=services.notifier,
+        )
         runner = ScheduledRunner(
             jobs=(
                 preparation_runtime.build_job(),
@@ -214,6 +226,20 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
                 notifier=services.notifier,
                 telegram_settings=settings.telegram,
             ),
+            control_store=services.control_store,
+            control_poller=(
+                None
+                if telegram_control_poller is None
+                else telegram_control_poller.poll
+            ),
+            resume_handler=_build_resume_maintenance_handler(
+                services.runtime,
+                settings=settings,
+                bar_root=services.bar_root,
+                market_close_runtime=market_close_runtime,
+                notifier=services.notifier,
+                telegram_settings=settings.telegram,
+            ),
         )
         logger.info("연속 운영 runner를 시작합니다.")
         runner_result = runner.run_forever(max_iterations=args.max_iterations)
@@ -230,9 +256,52 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
     print(f"알림 파일: {services.notification_log_path}")
     print(f"주문 상태 파일: {services.state_store.path}")
     print(f"scheduler 상태 파일: {services.scheduler_state_store.path}")
+    print(f"runner control 상태 파일: {services.control_store.path}")
     if runner_result.status is RunnerStatus.SAFE_STOP:
         return EXIT_CODE_OPERATION_FAILED
     return EXIT_CODE_SUCCESS
+
+
+def _handle_control_pause(args: argparse.Namespace) -> int:
+    return _handle_control_mode(args, mode="pause")
+
+
+def _handle_control_resume(args: argparse.Namespace) -> int:
+    return _handle_control_mode(args, mode="resume")
+
+
+def _handle_control_mode(args: argparse.Namespace, *, mode: str) -> int:
+    settings = _load_runtime_settings(args.env_file)
+    if settings is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+    store = FileRunnerControlStore(settings.log_dir / "runner_control.json")
+    try:
+        timestamp = datetime.now(KST)
+        if mode == "pause":
+            state = store.pause(timestamp=timestamp, source="cli")
+        elif mode == "resume":
+            state = store.resume(timestamp=timestamp, source="cli")
+        else:  # pragma: no cover - defensive branch
+            raise ValueError(f"unsupported control mode: {mode}")
+    except Exception as exc:
+        _log_operation_failure(f"control {mode}", exc)
+        return EXIT_CODE_OPERATION_FAILED
+
+    _print_runner_control_state(state, path=store.path)
+    return EXIT_CODE_SUCCESS
+
+
+def _print_runner_control_state(
+    state: RunnerControlState,
+    *,
+    path: Path,
+) -> None:
+    print(f"runner control 상태: {state.mode.value}")
+    if state.paused_at is not None:
+        print(f"pause 시각: {state.paused_at.isoformat()}")
+    if state.resumed_at is not None:
+        print(f"resume 시각: {state.resumed_at.isoformat()}")
+    print(f"runner control 상태 파일: {path}")
 
 
 def _handle_market_open(args: argparse.Namespace) -> int:
@@ -658,6 +727,69 @@ def _build_safe_stop_cleanup_handler(
     )
 
 
+def _build_resume_maintenance_handler(
+    runtime: LiveCycleRuntime,
+    *,
+    settings: AppSettings,
+    bar_root: Path,
+    market_close_runtime: MarketCloseRuntime,
+    notifier: Notifier,
+    telegram_settings: TelegramSettings,
+):
+    def handler(context: ResumeContext) -> str:
+        return _run_resume_maintenance(
+            context,
+            runtime=runtime,
+            settings=settings,
+            bar_root=bar_root,
+            market_close_runtime=market_close_runtime,
+            notifier=notifier,
+            telegram_settings=telegram_settings,
+        )
+
+    return handler
+
+
+def _run_resume_maintenance(
+    context: ResumeContext,
+    *,
+    runtime: LiveCycleRuntime,
+    settings: AppSettings,
+    bar_root: Path,
+    market_close_runtime: MarketCloseRuntime,
+    notifier: Notifier,
+    telegram_settings: TelegramSettings,
+) -> str:
+    return _run_resume_maintenance_impl(
+        context,
+        runtime=runtime,
+        settings=settings,
+        bar_root=bar_root,
+        market_close_runtime=market_close_runtime,
+        notifier=notifier,
+        telegram_settings=telegram_settings,
+        collect_strategy_bars=_collect_strategy_bars,
+        run_market_close_flow=_run_market_close_flow,
+        render_market_close_summary=_render_market_close_summary,
+    )
+
+
+def _build_telegram_control_poller(
+    telegram_settings: TelegramSettings,
+    *,
+    control_store: FileRunnerControlStore,
+    notifier: Notifier,
+) -> TelegramControlPoller | None:
+    if not telegram_settings.enabled:
+        return None
+    return TelegramControlPoller(
+        settings=telegram_settings,
+        control_store=control_store,
+        notifier=notifier,
+        clock=lambda: datetime.now(KST),
+    )
+
+
 def _run_market_close_flow(
     runtime: MarketCloseRuntime,
     *,
@@ -902,6 +1034,8 @@ __all__ = [
     "_build_paper_broker",
     "_build_safe_stop_cleanup_handler",
     "_build_scheduled_cycle_job",
+    "_build_resume_maintenance_handler",
+    "_build_telegram_control_poller",
     "_build_and_write_weekly_recommendation",
     "_build_weekly_review_notifier",
     "_collection_window_start",
@@ -911,6 +1045,8 @@ __all__ = [
     "_execute_live_cycle",
     "_handle_approve_symbols",
     "_handle_collect_daily_bars",
+    "_handle_control_pause",
+    "_handle_control_resume",
     "_handle_daily_inspection",
     "_handle_market_close",
     "_handle_market_open",
@@ -928,5 +1064,6 @@ __all__ = [
     "_resolve_environment",
     "_resolve_incremental_collection_start",
     "_run_market_close_flow",
+    "_run_resume_maintenance",
     "timedelta",
 ]

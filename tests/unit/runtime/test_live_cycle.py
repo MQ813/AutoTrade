@@ -108,6 +108,51 @@ def test_live_cycle_runtime_records_no_data_without_bars(tmp_path) -> None:
     assert not (log_dir / "notifications.jsonl").exists()
 
 
+def test_live_cycle_sync_open_orders_does_not_submit_new_orders(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    state_store = FileExecutionStateStore(log_dir / "execution_state.json")
+    fill = _fill(
+        "fill-1",
+        order_id="order-1",
+        symbol="069500",
+        quantity=3,
+        price=Decimal("100"),
+        filled_at=datetime(2026, 4, 10, 10, 0, tzinfo=KST),
+    )
+    broker = ScriptedLiveBroker(fill_outcomes={"order-1": [(fill,)]})
+    OrderExecutionEngine(broker, state_store=state_store).submit_order(
+        OrderRequest(
+            request_id="seed-buy",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=3,
+            limit_price=Decimal("100"),
+            requested_at=datetime(2026, 4, 10, 9, 30, tzinfo=KST),
+        )
+    )
+    broker.submit_requests.clear()
+    notifier = RecordingNotifier()
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=notifier,
+        state_store=state_store,
+        clock=lambda: datetime(2026, 4, 10, 10, 0, tzinfo=KST),
+    )
+
+    result = runtime.sync_open_orders()
+
+    assert broker.submit_requests == []
+    assert broker.fill_requests == ["order-1"]
+    assert result.total_fills == 1
+    assert result.total_notifications == 1
+    assert notifier.notifications[0].subject == "AutoTrade fill 069500 [3@100]"
+
+
 def test_live_cycle_runtime_filters_out_future_bars(tmp_path) -> None:
     bar_root = tmp_path / "bars"
     log_dir = tmp_path / "logs"

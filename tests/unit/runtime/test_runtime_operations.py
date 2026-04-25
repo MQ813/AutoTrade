@@ -134,6 +134,52 @@ def test_handle_run_continuous_returns_operational_exit_code_on_runtime_error(
     assert result == operations.EXIT_CODE_OPERATION_FAILED
 
 
+def test_handle_control_pause_writes_runner_control_state(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_runtime_settings",
+        lambda env_file: _settings(tmp_path / "logs"),
+    )
+
+    result = operations._handle_control_pause(
+        argparse.Namespace(env_file=tmp_path / ".env")
+    )
+
+    assert result == operations.EXIT_CODE_SUCCESS
+    state = operations.FileRunnerControlStore(
+        tmp_path / "logs" / "runner_control.json"
+    ).load()
+    assert state.mode.value == "paused"
+    assert state.paused_by == "cli"
+    assert "runner control 상태: paused" in capsys.readouterr().out
+
+
+def test_handle_control_resume_writes_runner_control_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operations,
+        "_load_runtime_settings",
+        lambda env_file: _settings(tmp_path / "logs"),
+    )
+    store = operations.FileRunnerControlStore(tmp_path / "logs" / "runner_control.json")
+    store.pause(timestamp=datetime(2026, 4, 10, 9, 0, tzinfo=KST), source="cli")
+
+    result = operations._handle_control_resume(
+        argparse.Namespace(env_file=tmp_path / ".env")
+    )
+
+    assert result == operations.EXIT_CODE_SUCCESS
+    state = store.load()
+    assert state.mode.value == "running"
+    assert state.resumed_by == "cli"
+
+
 def test_handle_market_close_returns_operational_exit_code_on_runtime_error(
     tmp_path,
     monkeypatch,
@@ -637,6 +683,92 @@ def test_build_scheduled_cycle_job_uses_context_scheduled_at(
 
     assert summary == "summary"
     assert captured == [datetime(2026, 4, 10, 9, 30, tzinfo=KST)]
+
+
+def test_run_resume_maintenance_catches_up_syncs_and_runs_missed_close(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, datetime]] = []
+
+    class FakeSyncResult:
+        total_fills = 1
+        total_notifications = 2
+
+        def render_summary(self) -> str:
+            return "sync summary"
+
+    class FakeRuntime:
+        timeframe = Timeframe.MINUTE_30
+
+        def sync_open_orders(self, *, timestamp):
+            calls.append(("sync", timestamp))
+            return FakeSyncResult()
+
+    class FakeMarketCloseRuntime:
+        calendar = KrxRegularSessionCalendar()
+
+    def fake_collect_strategy_bars(settings, *, bar_root, timeframe, generated_at):
+        calls.append(("collect", generated_at))
+
+    def fake_run_market_close_flow(
+        runtime,
+        *,
+        notifier,
+        telegram_settings,
+        timestamp,
+        triggered_at=None,
+        safe_stop_reason=None,
+        safe_stop_detail=None,
+    ):
+        assert safe_stop_reason is None
+        assert safe_stop_detail is None
+        calls.append(("market_close", timestamp))
+        calls.append(("triggered", triggered_at))
+        return object(), None
+
+    monkeypatch.setattr(
+        operations,
+        "_collect_strategy_bars",
+        fake_collect_strategy_bars,
+    )
+    monkeypatch.setattr(
+        operations,
+        "_run_market_close_flow",
+        fake_run_market_close_flow,
+    )
+    monkeypatch.setattr(
+        operations,
+        "_render_market_close_summary",
+        lambda result, weekly_review: "close summary",
+    )
+    context = operations.ResumeContext(
+        paused_at=datetime(2026, 4, 10, 15, 0, tzinfo=KST),
+        resumed_at=datetime(2026, 4, 10, 16, 0, tzinfo=KST),
+        source="cli",
+        state=operations.RunnerControlState(),
+        runs=(),
+    )
+
+    detail = operations._run_resume_maintenance(
+        context,
+        runtime=FakeRuntime(),
+        settings=_settings(tmp_path / "logs"),
+        bar_root=tmp_path / "bars",
+        market_close_runtime=FakeMarketCloseRuntime(),
+        notifier=RecordingNotifier(),
+        telegram_settings=TelegramSettings(enabled=False),
+    )
+
+    assert calls == [
+        ("collect", datetime(2026, 4, 10, 16, 0, tzinfo=KST)),
+        ("sync", datetime(2026, 4, 10, 16, 0, tzinfo=KST)),
+        ("market_close", datetime(2026, 4, 10, 15, 30, tzinfo=KST)),
+        ("triggered", datetime(2026, 4, 10, 16, 0, tzinfo=KST)),
+    ]
+    assert "data_catch_up=completed" in detail
+    assert "sync_fills=1" in detail
+    assert "market_close=close summary" in detail
 
 
 def test_build_paper_broker_uses_kis_order_capacity_cash(

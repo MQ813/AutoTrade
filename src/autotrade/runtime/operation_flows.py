@@ -12,6 +12,7 @@ from typing import Protocol
 from autotrade.config import AppSettings
 from autotrade.config import TelegramSettings
 from autotrade.data import Bar
+from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
 from autotrade.data import Timeframe
 from autotrade.report import WeeklyReviewReport
@@ -19,9 +20,12 @@ from autotrade.runtime.live_cycle import LiveCycleResult
 from autotrade.runtime.live_cycle import LiveCycleRuntime
 from autotrade.runtime.market_close import MarketCloseResult
 from autotrade.runtime.market_close import MarketCloseRuntime
+from autotrade.runtime.runner import ResumeContext
 from autotrade.runtime.runner import SafeStopContext
 from autotrade.scheduler import JobContext
+from autotrade.scheduler import MarketSessionPhase
 from autotrade.scheduler import ScheduledJob
+from autotrade.scheduler import build_session_slots
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +148,81 @@ def execute_live_cycle(
         generated_at=generated_at,
     )
     return runtime.run(timestamp=generated_at)
+
+
+def run_resume_maintenance(
+    context: ResumeContext,
+    *,
+    runtime: LiveCycleRuntime,
+    settings: AppSettings,
+    bar_root: Path,
+    market_close_runtime: MarketCloseRuntime,
+    notifier,
+    telegram_settings: TelegramSettings,
+    collect_strategy_bars: Callable[..., None],
+    run_market_close_flow: Callable[
+        ..., tuple[MarketCloseResult, WeeklyReviewExecution | None]
+    ],
+    render_market_close_summary: Callable[
+        [MarketCloseResult, WeeklyReviewExecution | None], str
+    ],
+) -> str:
+    collect_strategy_bars(
+        settings,
+        bar_root=bar_root,
+        timeframe=runtime.timeframe,
+        generated_at=context.resumed_at,
+    )
+    sync_result = runtime.sync_open_orders(timestamp=context.resumed_at)
+    missed_close_at = latest_missed_market_close_at(
+        paused_at=context.paused_at,
+        resumed_at=context.resumed_at,
+        calendar=market_close_runtime.calendar,
+    )
+    market_close_summary = "not_required"
+    if missed_close_at is not None:
+        close_result, weekly_review = run_market_close_flow(
+            market_close_runtime,
+            notifier=notifier,
+            telegram_settings=telegram_settings,
+            timestamp=missed_close_at,
+            triggered_at=context.resumed_at,
+        )
+        market_close_summary = render_market_close_summary(
+            close_result,
+            weekly_review,
+        ).replace("\n", " | ")
+
+    return " ".join(
+        (
+            f"paused_at={context.paused_at.isoformat()}",
+            f"resumed_at={context.resumed_at.isoformat()}",
+            "data_catch_up=completed",
+            f"sync_fills={sync_result.total_fills}",
+            f"sync_notifications={sync_result.total_notifications}",
+            f"market_close={market_close_summary}",
+        )
+    )
+
+
+def latest_missed_market_close_at(
+    *,
+    paused_at: datetime,
+    resumed_at: datetime,
+    calendar: KrxRegularSessionCalendar,
+) -> datetime | None:
+    start_day = paused_at.astimezone(KST).date()
+    end_day = resumed_at.astimezone(KST).date()
+    missed_close_at: datetime | None = None
+    current_day = start_day
+    while current_day <= end_day:
+        for slot in build_session_slots(current_day, calendar=calendar):
+            if slot.phase is not MarketSessionPhase.MARKET_CLOSE:
+                continue
+            if paused_at <= slot.scheduled_at <= resumed_at:
+                missed_close_at = slot.scheduled_at
+        current_day = current_day.fromordinal(current_day.toordinal() + 1)
+    return missed_close_at
 
 
 def resolve_incremental_collection_start(

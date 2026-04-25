@@ -136,6 +136,45 @@ class LiveCycleResult:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True, slots=True)
+class LiveCycleSyncSymbolResult:
+    symbol: str
+    fills: tuple[ExecutionFill, ...] = ()
+    notifications: tuple[NotificationMessage, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LiveCycleSyncResult:
+    generated_at: datetime
+    symbol_results: tuple[LiveCycleSyncSymbolResult, ...]
+    stored_order_snapshots: int
+
+    @property
+    def total_fills(self) -> int:
+        return sum(len(result.fills) for result in self.symbol_results)
+
+    @property
+    def total_notifications(self) -> int:
+        return sum(len(result.notifications) for result in self.symbol_results)
+
+    def render_summary(self) -> str:
+        lines = [
+            f"generated_at={self.generated_at.isoformat()}",
+            f"symbols={len(self.symbol_results)}",
+            f"fills={self.total_fills}",
+            f"notifications={self.total_notifications}",
+            f"stored_order_snapshots={self.stored_order_snapshots}",
+        ]
+        for result in self.symbol_results:
+            lines.append(
+                "symbol="
+                f"{result.symbol} "
+                f"fills={len(result.fills)} "
+                f"notifications={len(result.notifications)}"
+            )
+        return "\n".join(lines)
+
+
 @dataclass(slots=True)
 class LiveCycleRuntime:
     settings: AppSettings
@@ -194,6 +233,46 @@ class LiveCycleRuntime:
             stored_order_snapshots=stored_order_snapshots,
         )
 
+    def sync_open_orders(
+        self,
+        *,
+        timestamp: datetime | None = None,
+        symbols: Sequence[str] | None = None,
+    ) -> LiveCycleSyncResult:
+        generated_at = timestamp or self.clock()
+        _require_aware_datetime("generated_at", generated_at)
+        resolved_symbols = self._sync_symbols(symbols)
+        logger.info(
+            "주문/체결 동기화를 시작합니다. 시각=%s 종목수=%d",
+            generated_at.isoformat(),
+            len(resolved_symbols),
+        )
+        symbol_results: list[LiveCycleSyncSymbolResult] = []
+        for symbol in resolved_symbols:
+            follow_up = self._follow_up_open_orders(
+                symbol=symbol,
+                generated_at=generated_at,
+            )
+            symbol_results.append(
+                LiveCycleSyncSymbolResult(
+                    symbol=symbol,
+                    fills=follow_up.fills,
+                    notifications=follow_up.notifications,
+                )
+            )
+        stored_order_snapshots = len(self.execution_engine.list_order_snapshots())
+        logger.info(
+            "주문/체결 동기화를 마쳤습니다. 체결=%d 알림=%d 저장된 스냅샷=%d",
+            sum(len(result.fills) for result in symbol_results),
+            sum(len(result.notifications) for result in symbol_results),
+            stored_order_snapshots,
+        )
+        return LiveCycleSyncResult(
+            generated_at=generated_at,
+            symbol_results=tuple(symbol_results),
+            stored_order_snapshots=stored_order_snapshots,
+        )
+
     def build_job(
         self,
         *,
@@ -206,6 +285,25 @@ class LiveCycleRuntime:
             return result.render_summary()
 
         return ScheduledJob(name=name, phase=phase, handler=handler)
+
+    def _sync_symbols(self, symbols: Sequence[str] | None) -> tuple[str, ...]:
+        if symbols is not None:
+            return tuple(symbols)
+        resolved_symbols: list[str] = []
+        seen_symbols: set[str] = set()
+        for symbol in (
+            *self.settings.target_symbols,
+            *(
+                snapshot.order.symbol
+                for snapshot in self.execution_engine.list_order_snapshots()
+                if snapshot.order.status in _OPEN_ORDER_STATUSES
+            ),
+        ):
+            if symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            resolved_symbols.append(symbol)
+        return tuple(resolved_symbols)
 
     def _run_symbol(
         self,

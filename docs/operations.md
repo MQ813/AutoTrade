@@ -19,10 +19,12 @@ The repository includes baseline regular-session `scheduler/report` support.
 
 - `run-once`: collects bars into `AUTOTRADE_LOG_DIR/bars`, then runs signals, risk checks, orders, and order/fill alerts once.
 - `run-continuous`: runs the scheduler, sleeps until `next_run_at`, and uses `AUTOTRADE_LOG_DIR/scheduler_state.json` to avoid duplicate slots after restart.
+- `control pause|resume`: updates `AUTOTRADE_LOG_DIR/runner_control.json` so an active `run-continuous` process can pause before starting later jobs and resume cooperatively.
 - `market_close`: writes daily run/inspection reports and, on the last trading day of the week, a weekly review.
 - Official CLI: `src/autotrade/cli.py`. In a local `src` checkout, use `PYTHONPATH=src python -m autotrade.cli ...`; compatibility path `python tools/operations.py ...` remains available.
 - CLI reads repo-root `.env` by default; template: `docs/autotrade.env.example`.
 - Default inputs/outputs: `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, `execution_state.json`, `scheduler_state.json`.
+- Runner control state: `AUTOTRADE_LOG_DIR/runner_control.json`.
 - Exit codes: `0=success`, `1=operation failure or safe stop`, `2=config/input error`.
 - `execution_state.json`, `scheduler_state.json`, and `intraday_risk_state.json` are saved by temp file + replace; corrupt files are backed up as `*.corrupt-*` and reset.
 - `--paper-cash` only applies when `AUTOTRADE_PAPER_TRADING_MODE=simulate`.
@@ -39,6 +41,8 @@ Useful commands:
 
 - Custom env: `PYTHONPATH=src python -m autotrade.cli run-once --env-file /path/to/custom.env`
 - Continuous: `PYTHONPATH=src python -m autotrade.cli run-continuous`
+- Pause continuous runner: `PYTHONPATH=src python -m autotrade.cli control pause`
+- Resume continuous runner: `PYTHONPATH=src python -m autotrade.cli control resume`
 - Market open only: `PYTHONPATH=src python -m autotrade.cli market-open`
 - Market close only: `PYTHONPATH=src python -m autotrade.cli market-close`
 - Weekly review only: `PYTHONPATH=src python -m autotrade.cli weekly-review --env-file /path/to/custom.env`
@@ -83,6 +87,8 @@ Optional:
 - Control cadence with `SchedulerConfig.intraday_interval`.
 - Record each job success/failure and details.
 - On a failed job, publish an alert, safe-stop, and resume from the next unrun slot using `scheduler_state.json`.
+- While paused, already running jobs finish, but later scheduler jobs do not start.
+- On resume, the runner refreshes strategy bars, syncs open orders/fills without submitting new orders, runs missed market-close cleanup once if the pause window crossed the close slot, and skips delayed trading slots scheduled at or before the resume time.
 
 ## Market Close
 
@@ -96,5 +102,6 @@ Optional:
 - Daily report: counts and failures by open/intraday/close phase.
 - Alerts: `error` on failure, `warning` if nothing ran, otherwise `info`.
 - Telegram: retries `429`, `5xx`, and network errors; splits long messages.
+- Telegram control: when Telegram is enabled, `/pause` and `/resume` commands are accepted only from `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error chat ids are output-only for v1.
 - Daily inspection: pre-open, intraday, and post-close checks as `passed/failed/pending`.
 - Weekly review: weekly summary of daily run and inspection results plus retrospection prompt.

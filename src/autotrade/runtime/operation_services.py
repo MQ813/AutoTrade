@@ -19,6 +19,7 @@ from autotrade.report import CompositeNotifier
 from autotrade.report import FileNotifier
 from autotrade.report import Notifier
 from autotrade.report import TelegramNotifier
+from autotrade.runtime.control import FileRunnerControlStore
 from autotrade.runtime.live_cycle import LiveCycleRuntime
 from autotrade.runtime.live_cycle import strategy_timeframe_for
 from autotrade.scheduler import FileSchedulerStateStore
@@ -35,6 +36,7 @@ class OperationServices:
     notifier: Notifier
     state_store: FileExecutionStateStore
     scheduler_state_store: FileSchedulerStateStore
+    control_store: FileRunnerControlStore
     broker_reader: BrokerReader
     broker_trader: BrokerTrader
     runtime: LiveCycleRuntime
@@ -57,6 +59,7 @@ def build_operation_services(
     scheduler_state_store = FileSchedulerStateStore(
         settings.log_dir / "scheduler_state.json"
     )
+    control_store = FileRunnerControlStore(settings.log_dir / "runner_control.json")
     logger.info(
         "설정을 불러왔습니다. 환경=%s 전략=%s 대상종목=%s",
         settings.broker.environment,
@@ -67,6 +70,7 @@ def build_operation_services(
     logger.info("알림 파일 경로: %s", notification_log_path)
     logger.info("주문 상태 파일 경로: %s", state_store.path)
     logger.info("scheduler 상태 파일 경로: %s", scheduler_state_store.path)
+    logger.info("runner control 상태 파일 경로: %s", control_store.path)
 
     broker_reader, broker_trader = build_broker_clients(
         settings,
@@ -90,6 +94,7 @@ def build_operation_services(
         notifier=notifier,
         state_store=state_store,
         scheduler_state_store=scheduler_state_store,
+        control_store=control_store,
         broker_reader=broker_reader,
         broker_trader=broker_trader,
         runtime=runtime,
