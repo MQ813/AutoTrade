@@ -1,7 +1,7 @@
 # Graph Report - /home/minq/codes_wsl/AutoTrade  (2026-04-27)
 
 ## Corpus Check
-- 123 files · ~235,155 words
+- 123 files · ~235,446 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -175,63 +175,63 @@ Nodes (1): Generated KRX regular-session holiday dates.  Regenerate with: `pytho
 
 ### Community 23 - "Community 23"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 24 - "Community 24"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 25 - "Community 25"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 26 - "Community 26"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 27 - "Community 27"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 28 - "Community 28"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 29 - "Community 29"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 30 - "Community 30"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 31 - "Community 31"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 32 - "Community 32"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 33 - "Community 33"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 34 - "Community 34"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 35 - "Community 35"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 36 - "Community 36"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 37 - "Community 37"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 38 - "Community 38"
 Cohesion: 1.0
@@ -308,12 +308,12 @@ Nodes (1): Raised when an operation can be retried safely.
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `BrokerSettings` connect `Community 5` to `Community 0`, `Community 2`, `Community 3`, `Community 8`, `Community 16`, `Community 18`?**
-  _High betweenness centrality (0.045) - this node is a cross-community bridge._
 - **Why does `Bar` connect `Community 9` to `Community 0`, `Community 2`, `Community 3`, `Community 5`, `Community 6`, `Community 7`, `Community 8`, `Community 10`, `Community 13`, `Community 17`, `Community 21`?**
-  _High betweenness centrality (0.044) - this node is a cross-community bridge._
-- **Why does `RiskSettings` connect `Community 14` to `Community 2`, `Community 3`, `Community 7`, `Community 16`, `Community 18`?**
-  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+  _High betweenness centrality (0.075) - this node is a cross-community bridge._
+- **Why does `load_settings()` connect `Community 16` to `Community 19`, `Community 5`?**
+  _High betweenness centrality (0.039) - this node is a cross-community bridge._
+- **Why does `BrokerSettings` connect `Community 5` to `Community 0`, `Community 2`, `Community 3`, `Community 8`, `Community 16`, `Community 18`?**
+  _High betweenness centrality (0.035) - this node is a cross-community bridge._
 - **Are the 162 inferred relationships involving `ValueError` (e.g. with `.__post_init__()` and `.__post_init__()`) actually correct?**
   _`ValueError` has 162 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 29 inferred relationships involving `KoreaInvestmentBrokerTrader` (e.g. with `BrokerNormalizationError` and `BrokerReader`) actually correct?**

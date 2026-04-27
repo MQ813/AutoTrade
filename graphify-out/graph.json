@@ -20943,8 +20943,8 @@
       "source_file": "/home/minq/codes_wsl/AutoTrade/tests/unit/runtime/test_live_cycle.py",
       "source_location": "L346",
       "weight": 1.0,
-      "_src": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
-      "_tgt": "models_risksettings",
+      "_src": "models_risksettings",
+      "_tgt": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
       "source": "models_risksettings",
       "target": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price"
     },
@@ -33495,8 +33495,8 @@
       "source_file": "/home/minq/codes_wsl/AutoTrade/tests/unit/runtime/test_live_cycle.py",
       "source_location": "L357",
       "weight": 1.0,
-      "_src": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
-      "_tgt": "live_fileexecutionstatestore",
+      "_src": "live_fileexecutionstatestore",
+      "_tgt": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
       "source": "live_fileexecutionstatestore",
       "target": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price"
     },
@@ -50691,8 +50691,8 @@
       "source_file": "/home/minq/codes_wsl/AutoTrade/tests/unit/runtime/test_live_cycle.py",
       "source_location": "L342",
       "weight": 1.0,
-      "_src": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
-      "_tgt": "live_cycle_livecycleruntime",
+      "_src": "live_cycle_livecycleruntime",
+      "_tgt": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
       "source": "live_cycle_livecycleruntime",
       "target": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price"
     },
@@ -52575,8 +52575,8 @@
       "source_file": "/home/minq/codes_wsl/AutoTrade/tests/unit/runtime/test_live_cycle.py",
       "source_location": "L361",
       "weight": 1.0,
-      "_src": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
-      "_tgt": "market_open_marketopenpreparationruntime_run",
+      "_src": "market_open_marketopenpreparationruntime_run",
+      "_tgt": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price",
       "source": "market_open_marketopenpreparationruntime_run",
       "target": "test_live_cycle_test_live_cycle_runtime_uses_broker_quote_for_buy_order_price"
     },
