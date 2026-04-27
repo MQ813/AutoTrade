@@ -299,7 +299,10 @@ def test_live_cycle_runtime_caps_buy_quantity_by_entry_order_weight(
 ) -> None:
     log_dir = tmp_path / "logs"
     bar = _bar("069500", "2026-04-10T10:00:00+09:00", close="20")
-    broker = ScriptedLiveBroker(cash_available=Decimal("1000"))
+    broker = ScriptedLiveBroker(
+        cash_available=Decimal("1000"),
+        quote_price=Decimal("20"),
+    )
     runtime = LiveCycleRuntime(
         settings=_settings(
             log_dir,
@@ -325,6 +328,42 @@ def test_live_cycle_runtime_caps_buy_quantity_by_entry_order_weight(
     assert result.symbol_results[0].status == "submitted"
     assert result.symbol_results[0].requested_quantity == 2
     assert result.symbol_results[0].approved_quantity == 2
+
+
+def test_live_cycle_runtime_uses_broker_quote_for_buy_order_price(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("005930", "2026-04-27T11:00:00+09:00", close="224250")
+    broker = ScriptedLiveBroker(
+        cash_available=Decimal("1000000"),
+        quote_price=Decimal("224500"),
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(
+            log_dir,
+            target_symbols=("005930",),
+            risk=RiskSettings(
+                max_position_weight=Decimal("1"),
+                entry_max_position_weight_per_order=Decimal("1"),
+            ),
+        ),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"005930": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.submit_requests[0].limit_price == Decimal("224500")
+    assert broker.submit_requests[0].quantity == 4
+    assert result.symbol_results[0].status == "submitted"
 
 
 def test_live_cycle_runtime_blocks_top_up_when_existing_position_reaches_weight_limit(
@@ -934,11 +973,13 @@ class ScriptedLiveBroker:
         *,
         holdings: tuple[Holding, ...] = (),
         cash_available: Decimal = Decimal("1000000"),
+        quote_price: Decimal = Decimal("100"),
         submit_outcomes: tuple[ExecutionOrder, ...] = (),
         fill_outcomes: dict[str, list[tuple[ExecutionFill, ...]]] | None = None,
     ) -> None:
         self._holdings = holdings
         self._cash_available = cash_available
+        self._quote_price = quote_price
         self._submit_outcomes = list(submit_outcomes)
         self._fill_outcomes = fill_outcomes or {}
         self._orders: dict[str, ExecutionOrder] = {}
@@ -949,7 +990,7 @@ class ScriptedLiveBroker:
     def get_quote(self, symbol: str) -> Quote:
         return Quote(
             symbol=symbol,
-            price=Decimal("100"),
+            price=self._quote_price,
             as_of=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
         )
 

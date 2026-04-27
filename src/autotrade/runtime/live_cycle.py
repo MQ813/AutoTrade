@@ -347,8 +347,8 @@ class LiveCycleRuntime:
         holdings = self.broker_reader.get_holdings()
         existing_snapshots = self.execution_engine.list_order_snapshots()
         market_closing = _is_market_closing_window(generated_at, self.timeframe)
-        latest_bar = bars[-1]
-        order_price = latest_bar.close
+        quote = self.broker_reader.get_quote(symbol)
+        order_price = quote.price
         capacity = self.broker_reader.get_order_capacity(symbol, order_price)
         risk_snapshot = self._build_risk_account_snapshot(
             generated_at=generated_at,
@@ -447,7 +447,7 @@ class LiveCycleRuntime:
                     symbol=symbol,
                     side=OrderSide.SELL,
                     quantity=holding_quantity,
-                    limit_price=bars[-1].close,
+                    limit_price=order_price,
                     requested_at=generated_at,
                 ),
                 generated_at=generated_at,
