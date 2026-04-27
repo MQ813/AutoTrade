@@ -26,7 +26,8 @@ The repository includes baseline regular-session `scheduler/report` support.
 - Default inputs/outputs: `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, `execution_state.json`, `scheduler_state.json`.
 - Runner control state: `AUTOTRADE_LOG_DIR/runner_control.json`.
 - Exit codes: `0=success`, `1=operation failure or safe stop`, `2=config/input error`.
-- `execution_state.json`, `scheduler_state.json`, and `intraday_risk_state.json` are saved by temp file + replace; corrupt files are backed up as `*.corrupt-*` and reset.
+- Runtime state files (`execution_state.json`, `scheduler_state.json`, `intraday_risk_state.json`, and `runner_control.json`) are saved by temp file + replace; corrupt files are backed up as `*.corrupt-*` and reset.
+- KIS timeout, URL, and connection failures are normalized to `KoreaInvestmentBrokerError`; retryable read-side requests retry before failing, while order submissions fail fast and let the runner safe-stop.
 - `--paper-cash` only applies when `AUTOTRADE_PAPER_TRADING_MODE=simulate`.
 - `tools/daily_inspection.py` and `tools/weekly_review.py` create text artifacts under `AUTOTRADE_LOG_DIR`; orchestration connects live executors and external alerts.
 

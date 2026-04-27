@@ -55,7 +55,7 @@ Rules:
 - Never overwrite user data without explicit backup path or dry-run mode.
 - Prefer deterministic scripts for file transforms.
 - Modify generators, not large JSON/YAML/generated artifacts.
-- Do not read `.env`.
+- Do not read `.env*`.
 
 ## Pitfalls
 - Do not edit generated files directly.
