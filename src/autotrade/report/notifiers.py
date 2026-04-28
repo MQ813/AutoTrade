@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-import json
-import logging
 from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from functools import lru_cache
+from http.client import HTTPConnection
+from http.client import HTTPSConnection
+import json
+import logging
 from pathlib import Path
 import re
+import socket
 from time import sleep as default_sleep
+from typing import Any
+from typing import cast
 from urllib.error import HTTPError
 from urllib.error import URLError
+from urllib.request import HTTPHandler
+from urllib.request import HTTPSHandler
 from urllib.request import Request
+from urllib.request import build_opener
 from urllib.request import urlopen
 
 from autotrade.config import TelegramSettings
@@ -189,6 +197,7 @@ class TelegramHttpRequest:
     body: bytes
     headers: Mapping[str, str]
     timeout: float
+    force_ipv4: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +215,7 @@ def _urllib_transport(request: TelegramHttpRequest) -> TelegramHttpResponse:
         method="POST",
     )
     try:
-        with urlopen(urllib_request, timeout=request.timeout) as response:
+        with _open_telegram_url(urllib_request, request) as response:
             return TelegramHttpResponse(
                 status=response.status,
                 body=response.read(),
@@ -223,6 +232,69 @@ def _urllib_transport(request: TelegramHttpRequest) -> TelegramHttpResponse:
 
 
 telegram_http_transport = _urllib_transport
+
+
+def _open_telegram_url(urllib_request: Request, request: TelegramHttpRequest) -> Any:
+    if not request.force_ipv4:
+        return urlopen(urllib_request, timeout=request.timeout)
+    opener = build_opener(_IPv4HTTPHandler, _IPv4HTTPSHandler)
+    return opener.open(urllib_request, timeout=request.timeout)
+
+
+def _create_ipv4_connection(
+    address: tuple[str, int],
+    timeout: float | None | object = None,
+    source_address: tuple[str, int] | None = None,
+) -> socket.socket:
+    host, port = address
+    last_error: OSError | None = None
+    for result in socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM):
+        family, socktype, proto, _, sockaddr = result
+        connection = socket.socket(family, socktype, proto)
+        try:
+            if timeout is None or isinstance(timeout, int | float):
+                connection.settimeout(cast(float | None, timeout))
+            if source_address is not None:
+                connection.bind(source_address)
+            connection.connect(sockaddr)
+            return connection
+        except OSError as error:
+            last_error = error
+            connection.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"no IPv4 address found for {host}")
+
+
+class _IPv4HTTPConnection(HTTPConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _create_ipv4_connection
+
+
+class _IPv4HTTPSConnection(HTTPSConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _create_ipv4_connection
+
+
+class _IPv4HTTPHandler(HTTPHandler):
+    def http_open(self, request: Request) -> Any:
+        return self.do_open(_IPv4HTTPConnection, request)
+
+
+class _IPv4HTTPSHandler(HTTPSHandler):
+    def https_open(self, request: Request) -> Any:
+        http_connection_args: dict[str, Any] = {}
+        if (context := getattr(self, "_context", None)) is not None:
+            http_connection_args["context"] = context
+        if (check_hostname := getattr(self, "_check_hostname", None)) is not None:
+            http_connection_args["check_hostname"] = check_hostname
+        return self.do_open(
+            _IPv4HTTPSConnection,
+            request,
+            **http_connection_args,
+        )
 
 
 @dataclass(slots=True)
@@ -291,6 +363,7 @@ class TelegramNotifier:
             body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"},
             timeout=self.settings.timeout_seconds,
+            force_ipv4=self.settings.force_ipv4,
         )
 
         for attempt in range(self.settings.max_retries + 1):

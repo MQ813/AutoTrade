@@ -139,6 +139,89 @@ def test_telegram_notifier_retries_rate_limit_and_uses_error_chat_id() -> None:
     assert "daily failed" in first_payload["text"]
 
 
+def test_telegram_notifier_sets_force_ipv4_on_http_request() -> None:
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps({"ok": True, "result": {"message_id": 1}}).encode("utf-8"),
+            headers={},
+        )
+
+    notifier = TelegramNotifier(
+        TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+            force_ipv4=True,
+        ),
+        transport=transport,
+    )
+
+    notifier.send(
+        NotificationMessage(
+            created_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+            severity=AlertSeverity.INFO,
+            subject="ipv4",
+            body="force IPv4",
+        )
+    )
+
+    assert requests[0].force_ipv4 is True
+
+
+def test_telegram_ipv4_connection_resolves_only_ipv4(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    getaddrinfo_calls = []
+
+    class FakeSocket:
+        def __init__(self, family, socktype, proto) -> None:
+            self.family = family
+            self.socktype = socktype
+            self.proto = proto
+            self.timeout = None
+            self.connected_to = None
+
+        def settimeout(self, timeout) -> None:
+            self.timeout = timeout
+
+        def bind(self, source_address) -> None:
+            self.source_address = source_address
+
+        def connect(self, sockaddr) -> None:
+            self.connected_to = sockaddr
+
+        def close(self) -> None:
+            self.closed = True
+
+    def fake_getaddrinfo(host, port, family, socktype):
+        getaddrinfo_calls.append((host, port, family, socktype))
+        return [(family, socktype, 6, "", ("203.0.113.10", port))]
+
+    monkeypatch.setattr(report_notifiers.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(report_notifiers.socket, "socket", FakeSocket)
+
+    connection = report_notifiers._create_ipv4_connection(
+        ("api.telegram.org", 443),
+        timeout=3.0,
+    )
+
+    assert getaddrinfo_calls == [
+        (
+            "api.telegram.org",
+            443,
+            report_notifiers.socket.AF_INET,
+            report_notifiers.socket.SOCK_STREAM,
+        )
+    ]
+    assert connection.family == report_notifiers.socket.AF_INET
+    assert connection.timeout == 3.0
+    assert connection.connected_to == ("203.0.113.10", 443)
+
+
 def test_telegram_notifier_splits_long_messages() -> None:
     requests = []
 

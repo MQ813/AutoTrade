@@ -195,6 +195,7 @@ def test_load_settings_reads_telegram_settings(tmp_path: Path) -> None:
             AUTOTRADE_TELEGRAM_CHAT_ID="-10012345",
             AUTOTRADE_TELEGRAM_WARNING_CHAT_ID="-100999",
             AUTOTRADE_TELEGRAM_ERROR_CHAT_ID="-100777",
+            AUTOTRADE_TELEGRAM_FORCE_IPV4="true",
             AUTOTRADE_TELEGRAM_MAX_RETRIES="5",
             AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS="30",
         ),
@@ -205,6 +206,7 @@ def test_load_settings_reads_telegram_settings(tmp_path: Path) -> None:
     assert settings.telegram.chat_id == "-10012345"
     assert settings.telegram.warning_chat_id == "-100999"
     assert settings.telegram.error_chat_id == "-100777"
+    assert settings.telegram.force_ipv4 is True
     assert settings.telegram.max_retries == 5
     assert settings.telegram.timeout_seconds == 30.0
 
@@ -256,6 +258,7 @@ def test_load_settings_rejects_invalid_paper_trading_mode(tmp_path: Path) -> Non
         ("AUTOTRADE_RISK_EMERGENCY_STOP", "maybe"),
         ("AUTOTRADE_RISK_CANCEL_UNFILLED_ON_MARKET_CLOSE", "maybe"),
         ("AUTOTRADE_TELEGRAM_ENABLED", "maybe"),
+        ("AUTOTRADE_TELEGRAM_FORCE_IPV4", "maybe"),
         ("AUTOTRADE_TELEGRAM_MAX_RETRIES", "1.5"),
         ("AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS", "abc"),
     ],

@@ -27,6 +27,7 @@ DEFAULT_RISK_TRADING_HALTED = "false"
 DEFAULT_RISK_EMERGENCY_STOP = "false"
 DEFAULT_RISK_CANCEL_UNFILLED_ON_MARKET_CLOSE = "true"
 DEFAULT_TELEGRAM_ENABLED = "false"
+DEFAULT_TELEGRAM_FORCE_IPV4 = "false"
 DEFAULT_TELEGRAM_MAX_RETRIES = "3"
 DEFAULT_TELEGRAM_TIMEOUT_SECONDS = "10.0"
 
@@ -111,6 +112,14 @@ def load_telegram_settings(
         error_chat_id=_read_optional_text(
             resolved_environment,
             "AUTOTRADE_TELEGRAM_ERROR_CHAT_ID",
+        ),
+        force_ipv4=_parse_bool_setting(
+            _read_optional_value(
+                resolved_environment,
+                "AUTOTRADE_TELEGRAM_FORCE_IPV4",
+                default=DEFAULT_TELEGRAM_FORCE_IPV4,
+            ),
+            key="AUTOTRADE_TELEGRAM_FORCE_IPV4",
         ),
         max_retries=_parse_int_setting(
             _read_optional_value(

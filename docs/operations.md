@@ -14,6 +14,7 @@ The repository includes baseline regular-session `scheduler/report` support.
 - `AUTOTRADE_TELEGRAM_ENABLED=true` makes `python -m autotrade.cli ...` fan out to file and Telegram notifiers.
 - `weekly-review` reads repo-root `.env` by default, saves the weekly review, and sends Telegram if enabled.
 - Telegram defaults to `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error channels can use `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID` and `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`.
+- Set `AUTOTRADE_TELEGRAM_FORCE_IPV4=true` when the host has a broken IPv6 route to Telegram; this limits Telegram HTTP requests and control polling to IPv4.
 
 ## CLI Behavior
 
@@ -68,6 +69,7 @@ Optional:
 - `AUTOTRADE_TELEGRAM_CHAT_ID`
 - `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID`
 - `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`
+- `AUTOTRADE_TELEGRAM_FORCE_IPV4`
 - `AUTOTRADE_TELEGRAM_MAX_RETRIES`
 - `AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS`
 

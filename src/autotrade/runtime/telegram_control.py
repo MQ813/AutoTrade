@@ -54,6 +54,7 @@ class TelegramControlPoller:
             body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"},
             timeout=self.settings.timeout_seconds,
+            force_ipv4=self.settings.force_ipv4,
         )
         response = self.transport(request)
         decoded_payload = _decode_payload(response.body)

@@ -45,6 +45,7 @@ class TelegramSettings:
     chat_id: str | None = None
     warning_chat_id: str | None = None
     error_chat_id: str | None = None
+    force_ipv4: bool = False
     max_retries: int = 3
     timeout_seconds: float = 10.0
 
