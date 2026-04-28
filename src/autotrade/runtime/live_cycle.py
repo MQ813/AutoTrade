@@ -19,6 +19,7 @@ from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
 from autotrade.common import Signal
 from autotrade.common import SignalAction
+from autotrade.common.price_ticks import normalize_krx_symbol_order_price
 from autotrade.config import AppSettings
 from autotrade.data import Bar
 from autotrade.data import KST
@@ -348,7 +349,20 @@ class LiveCycleRuntime:
         existing_snapshots = self.execution_engine.list_order_snapshots()
         market_closing = _is_market_closing_window(generated_at, self.timeframe)
         quote = self.broker_reader.get_quote(symbol)
-        order_price = quote.price
+        order_price = _normalize_order_price_for_signal(
+            symbol,
+            quote.price,
+            signal.action,
+        )
+        if order_price != quote.price:
+            logger.info(
+                "호가단위에 맞춰 주문 가격을 보정합니다. symbol=%s action=%s "
+                "raw_price=%s normalized_price=%s",
+                symbol,
+                signal.action.value,
+                quote.price,
+                order_price,
+            )
         capacity = self.broker_reader.get_order_capacity(symbol, order_price)
         risk_snapshot = self._build_risk_account_snapshot(
             generated_at=generated_at,
@@ -814,10 +828,13 @@ class LiveCycleRuntime:
             snapshot.order.order_id for snapshot in existing_snapshots
         }
         logger.info(
-            "브로커 주문을 제출합니다. symbol=%s side=%s quantity=%d",
+            "브로커 주문을 제출합니다. request_id=%s symbol=%s side=%s "
+            "quantity=%d limit_price=%s",
+            request.request_id,
             request.symbol,
             request.side.value,
             request.quantity,
+            request.limit_price,
         )
         order_snapshot = self.execution_engine.submit_order(request)
         synced_snapshot = self.execution_engine.sync_fills(
@@ -973,6 +990,17 @@ def _advance_market_if_supported(
         return
     for bar in bars:
         advance_bar(bar)
+
+
+def _normalize_order_price_for_signal(
+    symbol: str,
+    price: Decimal,
+    action: SignalAction,
+) -> Decimal:
+    if action is SignalAction.HOLD:
+        return price
+    side = OrderSide.SELL if action is SignalAction.SELL else OrderSide.BUY
+    return normalize_krx_symbol_order_price(symbol, price, side)
 
 
 def _require_aware_datetime(field_name: str, value: datetime) -> None:

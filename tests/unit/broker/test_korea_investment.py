@@ -707,6 +707,35 @@ def test_korea_investment_broker_trader_submits_limit_order_with_hashkey() -> No
     }
 
 
+def test_korea_investment_broker_trader_rejects_invalid_tick_before_submit() -> None:
+    transport = RecordingTransport({})
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    with pytest.raises(
+        KoreaInvestmentBrokerError,
+        match=(
+            "invalid KRX order tick price .*symbol=005930 .*side=SELL "
+            ".*limit_price=222750 .*normalized_price=222500"
+        ),
+    ):
+        trader.submit_order(
+            OrderRequest(
+                request_id="submit-invalid-tick",
+                symbol="005930",
+                side=OrderSide.SELL,
+                quantity=2,
+                limit_price=Decimal("222750"),
+                requested_at=datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            )
+        )
+
+    assert transport.requests == []
+
+
 def test_korea_investment_broker_trader_does_not_retry_order_transport_failure() -> (
     None
 ):

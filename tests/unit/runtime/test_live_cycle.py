@@ -366,6 +366,115 @@ def test_live_cycle_runtime_uses_broker_quote_for_buy_order_price(
     assert result.symbol_results[0].status == "submitted"
 
 
+def test_live_cycle_runtime_normalizes_buy_order_price_to_krx_tick(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("005930", "2026-04-27T11:00:00+09:00", close="224250")
+    broker = ScriptedLiveBroker(
+        cash_available=Decimal("1000000"),
+        quote_price=Decimal("224250"),
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(
+            log_dir,
+            target_symbols=("005930",),
+            risk=RiskSettings(
+                max_position_weight=Decimal("1"),
+                entry_max_position_weight_per_order=Decimal("1"),
+            ),
+        ),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"005930": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.submit_requests[0].limit_price == Decimal("224500")
+    assert broker.capacity_requests == [Decimal("224500")]
+    assert result.symbol_results[0].status == "submitted"
+
+
+def test_live_cycle_runtime_normalizes_sell_order_price_to_krx_tick(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("005930", "2026-04-28T12:30:00+09:00", close="223000")
+    broker = ScriptedLiveBroker(
+        holdings=(
+            Holding(
+                symbol="005930",
+                quantity=2,
+                average_price=Decimal("225500"),
+                current_price=Decimal("222750"),
+            ),
+        ),
+        quote_price=Decimal("222750"),
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(log_dir, target_symbols=("005930",)),
+        strategy=FixedStrategy(SignalAction.SELL),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"005930": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.submit_requests[0].side is OrderSide.SELL
+    assert broker.submit_requests[0].quantity == 2
+    assert broker.submit_requests[0].limit_price == Decimal("222500")
+    assert result.symbol_results[0].status == "submitted_sell"
+
+
+def test_live_cycle_runtime_preserves_known_etf_five_won_tick_price(
+    tmp_path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    bar = _bar("069500", "2026-04-28T10:00:00+09:00", close="97265")
+    broker = ScriptedLiveBroker(
+        cash_available=Decimal("1000000"),
+        quote_price=Decimal("97265"),
+    )
+    runtime = LiveCycleRuntime(
+        settings=_settings(
+            log_dir,
+            target_symbols=("069500",),
+            risk=RiskSettings(
+                max_position_weight=Decimal("1"),
+                entry_max_position_weight_per_order=Decimal("1"),
+            ),
+        ),
+        strategy=FixedStrategy(SignalAction.BUY),
+        timeframe=Timeframe.MINUTE_30,
+        bar_source=StaticBarSource({"069500": (bar,)}),
+        broker_reader=broker,
+        broker_trader=broker,
+        notifier=RecordingNotifier(),
+        state_store=FileExecutionStateStore(log_dir / "execution_state.json"),
+        clock=lambda: bar.timestamp,
+    )
+
+    result = runtime.run()
+
+    assert len(broker.submit_requests) == 1
+    assert broker.submit_requests[0].limit_price == Decimal("97265")
+    assert broker.capacity_requests == [Decimal("97265")]
+    assert result.symbol_results[0].status == "submitted"
+
+
 def test_live_cycle_runtime_blocks_top_up_when_existing_position_reaches_weight_limit(
     tmp_path,
 ) -> None:
@@ -984,6 +1093,7 @@ class ScriptedLiveBroker:
         self._fill_outcomes = fill_outcomes or {}
         self._orders: dict[str, ExecutionOrder] = {}
         self.submit_requests: list[OrderRequest] = []
+        self.capacity_requests: list[Decimal] = []
         self.cancel_requests: list[OrderCancelRequest] = []
         self.fill_requests: list[str] = []
 
@@ -1002,6 +1112,7 @@ class ScriptedLiveBroker:
         symbol: str,
         order_price: Decimal,
     ) -> OrderCapacity:
+        self.capacity_requests.append(order_price)
         max_quantity = 0
         if order_price > Decimal("0"):
             max_quantity = int(self._cash_available / order_price)

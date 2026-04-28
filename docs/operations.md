@@ -85,6 +85,9 @@ Optional:
 - Periodically check order/fill state.
 - Record exceptions and warnings.
 - Stop automatic entries if risk limits are exceeded.
+- Normalize limit prices to the KRX tick grid before submission. ETF tick
+  handling uses `universe/universe_etf.csv` when available; otherwise the stock
+  tick grid is used.
 - Control cadence with `SchedulerConfig.intraday_interval`.
 - Record each job success/failure and details.
 - On a failed job, publish an alert, safe-stop, and resume from the next unrun slot using `scheduler_state.json`.

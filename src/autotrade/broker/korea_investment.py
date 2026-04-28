@@ -51,6 +51,8 @@ from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
 from autotrade.common import OrderType
 from autotrade.common import Quote
+from autotrade.common.price_ticks import is_valid_krx_symbol_order_price
+from autotrade.common.price_ticks import normalize_krx_symbol_order_price
 from autotrade.config.models import BrokerSettings
 from autotrade.data import Bar
 from autotrade.data import KRX_SESSION_CLOSE
@@ -1410,25 +1412,31 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
             raise KoreaInvestmentBrokerError(
                 f"unsupported order_type={request.order_type}"
             )
+        _ensure_valid_krx_order_price(request)
 
-        payload = self._request_json(
-            "POST",
-            KIS_ORDER_PATH,
-            body={
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._account_product_code,
-                "PDNO": request.symbol,
-                "ORD_DVSN": KIS_LIMIT_ORDER_DIVISION,
-                "ORD_QTY": str(request.quantity),
-                "ORD_UNPR": _format_order_price(request.limit_price),
-            },
-            tr_id=(
-                self._buy_order_tr_id
-                if request.side is OrderSide.BUY
-                else self._sell_order_tr_id
-            ),
-            require_hashkey=True,
-        )
+        try:
+            payload = self._request_json(
+                "POST",
+                KIS_ORDER_PATH,
+                body={
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._account_product_code,
+                    "PDNO": request.symbol,
+                    "ORD_DVSN": KIS_LIMIT_ORDER_DIVISION,
+                    "ORD_QTY": str(request.quantity),
+                    "ORD_UNPR": _format_order_price(request.limit_price),
+                },
+                tr_id=(
+                    self._buy_order_tr_id
+                    if request.side is OrderSide.BUY
+                    else self._sell_order_tr_id
+                ),
+                require_hashkey=True,
+            )
+        except KoreaInvestmentBrokerError as error:
+            raise KoreaInvestmentBrokerError(
+                f"order submit failed {_format_order_request_context(request)}: {error}"
+            ) from error
         output = _require_mapping(payload, "output")
         order_id = _coerce_string(output.get("ODNO"), field_name="ODNO")
         self._remember_management_order_record(
@@ -1461,24 +1469,36 @@ class KoreaInvestmentBrokerTrader(_KoreaInvestmentApiClient, BrokerTrader):
         )
         next_quantity = request.quantity or current_order.quantity
         next_limit_price = request.limit_price or current_order.limit_price
-        amend_all_remaining = request.quantity is None
-        payload = self._request_json(
-            "POST",
-            KIS_ORDER_AMEND_CANCEL_PATH,
-            body={
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._account_product_code,
-                "KRX_FWDG_ORD_ORGNO": _resolve_order_branch(current_record),
-                "ORGN_ODNO": _normalize_order_identifier(request.order_id),
-                "ORD_DVSN": _resolve_order_division(current_record),
-                "RVSE_CNCL_DVSN_CD": "01",
-                "ORD_QTY": "0" if amend_all_remaining else str(next_quantity),
-                "ORD_UNPR": _format_order_price(next_limit_price),
-                "QTY_ALL_ORD_YN": "Y" if amend_all_remaining else "N",
-            },
-            tr_id=self._amend_cancel_tr_id,
-            require_hashkey=True,
+        _ensure_valid_krx_order_price_for_amend(
+            request=request,
+            current_order=current_order,
+            next_limit_price=next_limit_price,
         )
+        amend_all_remaining = request.quantity is None
+        try:
+            payload = self._request_json(
+                "POST",
+                KIS_ORDER_AMEND_CANCEL_PATH,
+                body={
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._account_product_code,
+                    "KRX_FWDG_ORD_ORGNO": _resolve_order_branch(current_record),
+                    "ORGN_ODNO": _normalize_order_identifier(request.order_id),
+                    "ORD_DVSN": _resolve_order_division(current_record),
+                    "RVSE_CNCL_DVSN_CD": "01",
+                    "ORD_QTY": "0" if amend_all_remaining else str(next_quantity),
+                    "ORD_UNPR": _format_order_price(next_limit_price),
+                    "QTY_ALL_ORD_YN": "Y" if amend_all_remaining else "N",
+                },
+                tr_id=self._amend_cancel_tr_id,
+                require_hashkey=True,
+            )
+        except KoreaInvestmentBrokerError as error:
+            raise KoreaInvestmentBrokerError(
+                "order amend failed "
+                f"{_format_order_amend_context(request, current_order, next_limit_price)}: "
+                f"{error}"
+            ) from error
         output = _require_mapping(payload, "output")
         amended_order_id = (
             _optional_output_string(output.get("ODNO")) or request.order_id
@@ -2211,6 +2231,66 @@ def _redact_log_value(key: str, value: str) -> str:
     }:
         return "[REDACTED]"
     return value
+
+
+def _ensure_valid_krx_order_price(request: OrderRequest) -> None:
+    if is_valid_krx_symbol_order_price(request.symbol, request.limit_price):
+        return
+    normalized_price = normalize_krx_symbol_order_price(
+        request.symbol,
+        request.limit_price,
+        request.side,
+    )
+    raise KoreaInvestmentBrokerError(
+        "invalid KRX order tick price "
+        f"{_format_order_request_context(request)} "
+        f"normalized_price={normalized_price}"
+    )
+
+
+def _ensure_valid_krx_order_price_for_amend(
+    *,
+    request: OrderAmendRequest,
+    current_order: ExecutionOrder,
+    next_limit_price: Decimal,
+) -> None:
+    if is_valid_krx_symbol_order_price(current_order.symbol, next_limit_price):
+        return
+    normalized_price = normalize_krx_symbol_order_price(
+        current_order.symbol,
+        next_limit_price,
+        current_order.side,
+    )
+    raise KoreaInvestmentBrokerError(
+        "invalid KRX order tick price "
+        f"{_format_order_amend_context(request, current_order, next_limit_price)} "
+        f"normalized_price={normalized_price}"
+    )
+
+
+def _format_order_request_context(request: OrderRequest) -> str:
+    return (
+        f"request_id={request.request_id} "
+        f"symbol={request.symbol} "
+        f"side={request.side.value} "
+        f"quantity={request.quantity} "
+        f"limit_price={request.limit_price}"
+    )
+
+
+def _format_order_amend_context(
+    request: OrderAmendRequest,
+    current_order: ExecutionOrder,
+    next_limit_price: Decimal,
+) -> str:
+    return (
+        f"request_id={request.request_id} "
+        f"order_id={request.order_id} "
+        f"symbol={current_order.symbol} "
+        f"side={current_order.side.value} "
+        f"quantity={request.quantity or current_order.quantity} "
+        f"limit_price={next_limit_price}"
+    )
 
 
 def _format_order_price(value: Decimal) -> str:
