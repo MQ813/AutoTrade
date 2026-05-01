@@ -33,7 +33,6 @@ from autotrade.scheduler import SchedulerStateStore
 from autotrade.scheduler import run_scheduled_jobs
 
 logger = logging.getLogger(__name__)
-_CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS = 300.0
 
 
 def _require_aware_datetime(field_name: str, value: datetime) -> None:
@@ -76,7 +75,6 @@ class SafeStopContext:
 
 
 SafeStopHandler = Callable[[SafeStopContext], str | None]
-ControlPoller = Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +109,6 @@ class ScheduledRunner:
     stop_on_job_failure: bool = True
     safe_stop_handler: SafeStopHandler | None = None
     control_store: RunnerControlStore | None = None
-    control_poller: ControlPoller | None = None
     resume_handler: ResumeHandler | None = None
     control_poll_interval_seconds: float = 5.0
     _last_handled_resume_at: datetime | None = field(
@@ -120,16 +117,6 @@ class ScheduledRunner:
         repr=False,
     )
     _skip_scheduled_at_through: datetime | None = field(
-        default=None,
-        init=False,
-        repr=False,
-    )
-    _last_control_poller_error: str | None = field(
-        default=None,
-        init=False,
-        repr=False,
-    )
-    _last_control_poller_error_logged_at: datetime | None = field(
         default=None,
         init=False,
         repr=False,
@@ -251,7 +238,7 @@ class ScheduledRunner:
             wake_at.isoformat(),
             wait_seconds,
         )
-        if self.control_store is None and self.control_poller is None:
+        if self.control_store is None:
             self.sleep(wait_seconds)
             return
 
@@ -348,31 +335,9 @@ class ScheduledRunner:
         return None
 
     def _poll_and_load_control_state(self) -> RunnerControlState | None:
-        if self.control_poller is not None:
-            try:
-                self.control_poller()
-            except Exception as exc:
-                self._log_control_poller_failure(exc)
         if self.control_store is None:
             return None
         return self.control_store.load()
-
-    def _log_control_poller_failure(self, error: Exception) -> None:
-        error_message = str(error) or type(error).__name__
-        logged_at = self._last_control_poller_error_logged_at
-        now = self.clock()
-        if (
-            error_message == self._last_control_poller_error
-            and logged_at is not None
-            and (now - logged_at).total_seconds()
-            < _CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS
-        ):
-            return
-        self._last_control_poller_error = error_message
-        self._last_control_poller_error_logged_at = now
-        logger.warning(
-            "runner control poller 실행에 실패했습니다. error=%s", error_message
-        )
 
     def _state_with_skipped_controlled_slots(
         self,

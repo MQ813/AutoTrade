@@ -978,7 +978,8 @@ def test_build_notifier_returns_composite_when_telegram_enabled(tmp_path) -> Non
 
     assert isinstance(notifier, operations.CompositeNotifier)
     assert isinstance(notifier.notifiers[0], operations.FileNotifier)
-    assert isinstance(notifier.notifiers[1], operations.TelegramNotifier)
+    assert isinstance(notifier.notifiers[1], operations.BackgroundNotifier)
+    assert isinstance(notifier.notifiers[1].notifier, operations.TelegramNotifier)
 
 
 def test_build_telegram_control_poller_uses_dedicated_no_retry_notifier(
@@ -998,8 +999,9 @@ def test_build_telegram_control_poller_uses_dedicated_no_retry_notifier(
     )
 
     assert poller is not None
-    assert isinstance(poller.notifier, operations.TelegramNotifier)
-    assert poller.notifier.settings.max_retries == 0
+    assert isinstance(poller, operations.BackgroundTelegramControlPoller)
+    assert isinstance(poller.poller.notifier, operations.TelegramNotifier)
+    assert poller.poller.notifier.settings.max_retries == 0
 
 
 def test_is_last_trading_day_of_week_handles_friday_holiday() -> None:

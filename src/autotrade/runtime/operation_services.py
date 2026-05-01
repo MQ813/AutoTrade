@@ -15,6 +15,7 @@ from autotrade.config import AppSettings
 from autotrade.config import TelegramSettings
 from autotrade.data import CsvBarSource
 from autotrade.execution import FileExecutionStateStore
+from autotrade.report import BackgroundNotifier
 from autotrade.report import CompositeNotifier
 from autotrade.report import FileNotifier
 from autotrade.report import Notifier
@@ -159,6 +160,7 @@ def build_notifier(
     file_notifier_cls: type[FileNotifier] = FileNotifier,
     composite_notifier_cls: type[CompositeNotifier] = CompositeNotifier,
     telegram_notifier_cls: type[TelegramNotifier] = TelegramNotifier,
+    background_notifier_cls: type[BackgroundNotifier] = BackgroundNotifier,
 ) -> Notifier:
     file_notifier = file_notifier_cls(settings.log_dir / "notifications.jsonl")
     if not settings.telegram.enabled:
@@ -166,7 +168,7 @@ def build_notifier(
     return composite_notifier_cls(
         (
             file_notifier,
-            telegram_notifier_cls(settings.telegram),
+            background_notifier_cls(telegram_notifier_cls(settings.telegram)),
         )
     )
 
@@ -178,11 +180,12 @@ def build_weekly_review_notifier(
     file_notifier_cls: type[FileNotifier] = FileNotifier,
     composite_notifier_cls: type[CompositeNotifier] = CompositeNotifier,
     telegram_notifier_cls: type[TelegramNotifier] = TelegramNotifier,
+    background_notifier_cls: type[BackgroundNotifier] = BackgroundNotifier,
 ) -> Notifier:
     return composite_notifier_cls(
         (
             file_notifier_cls(log_dir / "notifications.jsonl"),
-            telegram_notifier_cls(telegram_settings),
+            background_notifier_cls(telegram_notifier_cls(telegram_settings)),
         )
     )
 

@@ -30,6 +30,7 @@ DEFAULT_TELEGRAM_ENABLED = "false"
 DEFAULT_TELEGRAM_FORCE_IPV4 = "false"
 DEFAULT_TELEGRAM_MAX_RETRIES = "3"
 DEFAULT_TELEGRAM_TIMEOUT_SECONDS = "10.0"
+DEFAULT_TELEGRAM_CONTROL_TIMEOUT_SECONDS = "3.0"
 
 
 class ConfigError(ValueError):
@@ -136,6 +137,14 @@ def load_telegram_settings(
                 default=DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
             ),
             key="AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS",
+        ),
+        control_timeout_seconds=_parse_float_setting(
+            _read_optional_value(
+                resolved_environment,
+                "AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS",
+                default=DEFAULT_TELEGRAM_CONTROL_TIMEOUT_SECONDS,
+            ),
+            key="AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS",
         ),
     )
 

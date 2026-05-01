@@ -39,6 +39,7 @@ from autotrade.recommendation import write_approved_symbols_bundle
 from autotrade.recommendation import write_recommendation_bundle
 from autotrade.report import build_daily_inspection_report
 from autotrade.report import build_weekly_review_report
+from autotrade.report import BackgroundNotifier
 from autotrade.report import CompositeNotifier
 from autotrade.report import FileNotifier
 from autotrade.report import Notifier
@@ -123,6 +124,7 @@ from autotrade.runtime.control import RunnerControlState
 from autotrade.runtime.runner import ResumeContext
 from autotrade.runtime.runner import RunnerStatus
 from autotrade.runtime.runner import ScheduledRunner
+from autotrade.runtime.telegram_control import BackgroundTelegramControlPoller
 from autotrade.runtime.telegram_control import TelegramControlPoller
 from autotrade.strategy import StrategyKind
 
@@ -139,11 +141,20 @@ def _log_operation_failure(command_name: str, error: Exception) -> None:
     logger.error("%s 실행에 실패했습니다: %s", command_name, error)
 
 
+def _close_notifier(notifier: Notifier | None) -> None:
+    if notifier is None:
+        return
+    close = getattr(notifier, "close", None)
+    if callable(close):
+        close()
+
+
 def _handle_run_once(args: argparse.Namespace) -> int:
     logger.info("AutoTrade 운영 사이클 실행을 준비합니다.")
     settings = _load_runtime_settings(args.env_file)
     if settings is None:
         return EXIT_CODE_CONFIGURATION_ERROR
+    services: OperationServices | None = None
     try:
         services = _build_operation_services(
             settings,
@@ -162,6 +173,9 @@ def _handle_run_once(args: argparse.Namespace) -> int:
     except Exception as exc:
         _log_operation_failure("run-once", exc)
         return EXIT_CODE_OPERATION_FAILED
+    finally:
+        if services is not None:
+            _close_notifier(services.notifier)
     logger.info("운영 사이클 실행이 끝났습니다.")
 
     print(result.render_korean_summary())
@@ -176,6 +190,8 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
     if settings is None:
         return EXIT_CODE_CONFIGURATION_ERROR
 
+    services: OperationServices | None = None
+    telegram_control_poller: BackgroundTelegramControlPoller | None = None
     try:
         services = _build_operation_services(
             settings,
@@ -203,6 +219,8 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
             settings.telegram,
             control_store=services.control_store,
         )
+        if telegram_control_poller is not None:
+            telegram_control_poller.start()
         runner = ScheduledRunner(
             jobs=(
                 preparation_runtime.build_job(),
@@ -226,11 +244,6 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
                 telegram_settings=settings.telegram,
             ),
             control_store=services.control_store,
-            control_poller=(
-                None
-                if telegram_control_poller is None
-                else telegram_control_poller.poll
-            ),
             resume_handler=_build_resume_maintenance_handler(
                 services.runtime,
                 settings=settings,
@@ -245,6 +258,11 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
     except Exception as exc:
         _log_operation_failure("run-continuous", exc)
         return EXIT_CODE_OPERATION_FAILED
+    finally:
+        if telegram_control_poller is not None:
+            telegram_control_poller.stop()
+        if services is not None:
+            _close_notifier(services.notifier)
     logger.info(
         "연속 운영 runner가 종료되었습니다. 상태=%s",
         runner_result.status.value,
@@ -310,6 +328,7 @@ def _handle_market_open(args: argparse.Namespace) -> int:
         return EXIT_CODE_CONFIGURATION_ERROR
 
     strategy_kind = StrategyKind(args.strategy)
+    services: OperationServices | None = None
     try:
         services = _build_operation_services(
             settings,
@@ -331,6 +350,9 @@ def _handle_market_open(args: argparse.Namespace) -> int:
     except Exception as exc:
         _log_operation_failure("market-open", exc)
         return EXIT_CODE_OPERATION_FAILED
+    finally:
+        if services is not None:
+            _close_notifier(services.notifier)
     print(result.render_summary())
     print(f"스모크 리포트 파일: {result.smoke_report_path}")
     print(f"점검 리포트 파일: {result.inspection_report_path}")
@@ -344,6 +366,7 @@ def _handle_market_close(args: argparse.Namespace) -> int:
     settings = _load_runtime_settings(args.env_file)
     if settings is None:
         return EXIT_CODE_CONFIGURATION_ERROR
+    notifier: Notifier | None = None
     try:
         broker_reader, _ = _build_broker_clients(
             settings,
@@ -368,6 +391,8 @@ def _handle_market_close(args: argparse.Namespace) -> int:
     except Exception as exc:
         _log_operation_failure("market-close", exc)
         return EXIT_CODE_OPERATION_FAILED
+    finally:
+        _close_notifier(notifier)
 
     print(result.render_summary())
     print(f"일일 실행 리포트 파일: {result.daily_run_report_path}")
@@ -393,20 +418,24 @@ def _handle_weekly_review(args: argparse.Namespace) -> int:
         logger.error("설정 로딩에 실패했습니다: %s", exc)
         return EXIT_CODE_CONFIGURATION_ERROR
 
+    notifier: Notifier | None = None
     try:
         weekly_review = _build_and_write_weekly_review(
             log_dir=log_dir,
             generated_at=generated_at,
         )
         if telegram_settings.enabled:
+            notifier = _build_weekly_review_notifier(log_dir, telegram_settings)
             publish_weekly_review_alert(
-                _build_weekly_review_notifier(log_dir, telegram_settings),
+                notifier,
                 weekly_review.report,
                 created_at=generated_at,
             )
     except Exception as exc:
         _log_operation_failure("weekly-review", exc)
         return EXIT_CODE_OPERATION_FAILED
+    finally:
+        _close_notifier(notifier)
     print(weekly_review.report_path)
     return EXIT_CODE_SUCCESS
 
@@ -576,6 +605,7 @@ def _build_notifier(settings: AppSettings) -> Notifier:
         file_notifier_cls=FileNotifier,
         composite_notifier_cls=CompositeNotifier,
         telegram_notifier_cls=TelegramNotifier,
+        background_notifier_cls=BackgroundNotifier,
     )
 
 
@@ -589,6 +619,7 @@ def _build_weekly_review_notifier(
         file_notifier_cls=FileNotifier,
         composite_notifier_cls=CompositeNotifier,
         telegram_notifier_cls=TelegramNotifier,
+        background_notifier_cls=BackgroundNotifier,
     )
 
 
@@ -777,14 +808,16 @@ def _build_telegram_control_poller(
     telegram_settings: TelegramSettings,
     *,
     control_store: FileRunnerControlStore,
-) -> TelegramControlPoller | None:
+) -> BackgroundTelegramControlPoller | None:
     if not telegram_settings.enabled:
         return None
-    return TelegramControlPoller(
-        settings=telegram_settings,
-        control_store=control_store,
-        notifier=TelegramNotifier(replace(telegram_settings, max_retries=0)),
-        clock=lambda: datetime.now(KST),
+    return BackgroundTelegramControlPoller(
+        TelegramControlPoller(
+            settings=telegram_settings,
+            control_store=control_store,
+            notifier=TelegramNotifier(replace(telegram_settings, max_retries=0)),
+            clock=lambda: datetime.now(KST),
+        )
     )
 
 

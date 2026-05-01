@@ -198,6 +198,7 @@ def test_load_settings_reads_telegram_settings(tmp_path: Path) -> None:
             AUTOTRADE_TELEGRAM_FORCE_IPV4="true",
             AUTOTRADE_TELEGRAM_MAX_RETRIES="5",
             AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS="30",
+            AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS="2.5",
         ),
     )
 
@@ -209,6 +210,7 @@ def test_load_settings_reads_telegram_settings(tmp_path: Path) -> None:
     assert settings.telegram.force_ipv4 is True
     assert settings.telegram.max_retries == 5
     assert settings.telegram.timeout_seconds == 30.0
+    assert settings.telegram.control_timeout_seconds == 2.5
 
 
 def test_load_settings_rejects_enabled_telegram_without_required_values(
@@ -261,6 +263,8 @@ def test_load_settings_rejects_invalid_paper_trading_mode(tmp_path: Path) -> Non
         ("AUTOTRADE_TELEGRAM_FORCE_IPV4", "maybe"),
         ("AUTOTRADE_TELEGRAM_MAX_RETRIES", "1.5"),
         ("AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS", "abc"),
+        ("AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS", "abc"),
+        ("AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS", "0"),
     ],
 )
 def test_load_settings_rejects_invalid_risk_values(

@@ -19,12 +19,13 @@ flowchart TD
     I --> J
     J --> K[Build LiveCycleRuntime]
     K --> L[Build MarketCloseRuntime]
-    L --> M[Build ScheduledRunner<br/>with runner_control + Telegram control]
-    M --> N[Register jobs<br/>market_open_prepare<br/>live_cycle<br/>market_close_cleanup]
-    N --> O[runner.run_forever]
-    O --> P{Runner status}
-    P -->|completed/stopped| Q[Print state/artifact paths<br/>exit 0]
-    P -->|safe_stop| R[Print stop reason<br/>exit 1]
+    L --> M[Start Telegram control background poller<br/>if enabled]
+    M --> N[Build ScheduledRunner<br/>with runner_control store]
+    N --> O[Register jobs<br/>market_open_prepare<br/>live_cycle<br/>market_close_cleanup]
+    O --> P[runner.run_forever]
+    P --> Q{Runner status}
+    Q -->|completed/stopped| R[Stop background workers<br/>print state/artifact paths<br/>exit 0]
+    Q -->|safe_stop| S[Stop background workers<br/>print stop reason<br/>exit 1]
 ```
 
 ## 2. Scheduler Loop
@@ -33,7 +34,7 @@ flowchart TD
 flowchart TD
     A[run_forever loop] --> B[run_once]
     B --> B1{runner_control paused?}
-    B1 -->|Yes| B2[Wait and poll CLI/Telegram control]
+    B1 -->|Yes| B2[Wait and read runner_control]
     B2 --> B3{resumed?}
     B3 -->|No| B2
     B3 -->|Yes| B4[Run resume maintenance<br/>data catch-up + sync + missed close cleanup]
@@ -56,8 +57,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[CLI control pause/resume<br/>or Telegram /pause /resume] --> B[Update runner_control.json]
-    B --> C[run-continuous polls during sleep]
+    A[CLI control pause/resume<br/>or Telegram background poller /pause /resume] --> B[Update runner_control.json]
+    B --> C[run-continuous reads local control state during sleep]
     C --> D{paused?}
     D -->|Yes| E[Do not start later scheduler jobs]
     E --> F{resume observed?}

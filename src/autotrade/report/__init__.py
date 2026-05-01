@@ -44,6 +44,7 @@ from autotrade.report.operations import write_daily_run_report
 from autotrade.report.operations import write_run_log
 from autotrade.report.operations import write_weekly_review_report
 from autotrade.report.notifiers import CompositeNotifier
+from autotrade.report.notifiers import BackgroundNotifier
 from autotrade.report.notifiers import FileNotifier
 from autotrade.report.notifiers import NotificationDeliveryError
 from autotrade.report.notifiers import TelegramHttpRequest
@@ -56,6 +57,7 @@ __all__ = [
     "BacktestPerformanceSummary",
     "BacktestOverfitCheck",
     "BacktestReport",
+    "BackgroundNotifier",
     "append_job_run_result",
     "DailyInspectionItem",
     "DailyInspectionReport",

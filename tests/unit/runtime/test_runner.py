@@ -5,7 +5,6 @@ from dataclasses import field
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-import logging
 
 from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
@@ -311,77 +310,6 @@ def test_scheduled_runner_safe_stops_when_resume_maintenance_fails(
     assert notifier.notifications[0].subject == (
         "AutoTrade runner safe stop [resume_maintenance_failure]"
     )
-
-
-def test_scheduled_runner_logs_control_poller_failure_without_traceback(
-    tmp_path,
-    caplog,
-) -> None:
-    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
-    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
-    runner = ScheduledRunner(
-        jobs=(),
-        state_store=state_store,
-        notifier=RecordingNotifier(),
-        control_store=control_store,
-        control_poller=lambda: (_ for _ in ()).throw(RuntimeError("network down")),
-    )
-    caplog.set_level(logging.WARNING, logger="autotrade.runtime.runner")
-
-    runner._poll_and_load_control_state()
-    runner._poll_and_load_control_state()
-
-    records = [
-        record
-        for record in caplog.records
-        if "runner control poller 실행에 실패했습니다." in record.message
-    ]
-    assert len(records) == 1
-    assert "error=network down" in records[0].message
-    assert records[0].exc_info is None
-
-
-def test_scheduled_runner_suppresses_flapping_control_poller_logs(
-    tmp_path,
-    caplog,
-) -> None:
-    state_store = FileSchedulerStateStore(tmp_path / "scheduler_state.json")
-    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
-    clock = AdjustableClock(datetime(2026, 4, 10, 9, 0, tzinfo=KST))
-    outcomes = iter(("fail", "ok", "fail"))
-
-    def poller() -> None:
-        if next(outcomes) == "fail":
-            raise RuntimeError("network down")
-
-    runner = ScheduledRunner(
-        jobs=(),
-        state_store=state_store,
-        notifier=RecordingNotifier(),
-        control_store=control_store,
-        control_poller=poller,
-        clock=clock,
-    )
-    caplog.set_level(logging.INFO, logger="autotrade.runtime.runner")
-
-    runner._poll_and_load_control_state()
-    clock.current = datetime(2026, 4, 10, 9, 1, tzinfo=KST)
-    runner._poll_and_load_control_state()
-    clock.current = datetime(2026, 4, 10, 9, 2, tzinfo=KST)
-    runner._poll_and_load_control_state()
-
-    failure_records = [
-        record
-        for record in caplog.records
-        if "runner control poller 실행에 실패했습니다." in record.message
-    ]
-    recovery_records = [
-        record
-        for record in caplog.records
-        if "runner control poller가 복구되었습니다." in record.message
-    ]
-    assert len(failure_records) == 1
-    assert recovery_records == []
 
 
 @dataclass(slots=True)

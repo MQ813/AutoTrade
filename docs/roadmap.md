@@ -294,6 +294,17 @@ AutoTrade/
 
 완료.
 
+추가 개선 방향: Telegram 네트워크 대기 시간이 runner 진행을 막지 않도록 알림/제어 경로를 background worker로 분리한다.
+
+- [x] Telegram 알림은 `Queue` 기반 background notifier로 전환해 메인 운영 흐름이 전송 timeout/retry/sleep에 묶이지 않게 한다.
+- [x] Telegram 제어 polling은 별도 background poller가 수행하고, `/pause`, `/resume`은 `runner_control.json`에 반영한다.
+- [x] `ScheduledRunner`는 Telegram 네트워크를 직접 호출하지 않고 로컬 runner control store만 읽도록 단순화한다.
+- [x] background worker는 stop event, 실패 로그 rate-limit, bounded queue, 종료 시 짧은 flush timeout을 가진다.
+- [x] `FileRunnerControlStore`는 runner와 control poller가 동시에 접근해도 안전하도록 파일 읽기/쓰기 경로에 lock을 적용한다.
+- [x] 알림 timeout과 제어 polling timeout을 분리해 알림 안정성과 제어 반응성을 독립적으로 조정한다.
+- [x] pause는 기존 정책처럼 실행 중인 job을 강제 중단하지 않고 이후 scheduler job 시작을 막는 제어로 유지한다.
+- [x] 단위 테스트는 timeout 중에도 runner가 blocking 되지 않는지, 제어 명령이 store에 반영되는지, 종료 flush가 제한 시간 안에 끝나는지 검증한다.
+
 #### 8.8.7 주간 종목 추천 파이프라인
 
 주간 추천기는 seed universe CSV와 일봉 캐시를 입력으로 유니버스 필터 -> 점수 계산 -> 상위 20개 -> 제외 규칙을 결정적으로 수행하고 CSV/Markdown/JSON 리포트를 저장한다. Codex 검토용 프롬프트와 승인 종목 파일 경로가 준비되어 있으며, 실행 경로는 승인 종목을 우선 사용하고 없으면 `AUTOTRADE_TARGET_SYMBOLS`로 fallback 한다. 세부 계획은 `docs/stock_recommender_plan.md`.

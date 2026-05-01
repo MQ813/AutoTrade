@@ -24,6 +24,7 @@ from autotrade.runtime.runner import ResumeContext
 from autotrade.runtime.runner import SafeStopContext
 from autotrade.runtime.runner import ScheduledRunner
 from autotrade.runtime.runner import build_safe_stop_notification
+from autotrade.runtime.telegram_control import BackgroundTelegramControlPoller
 from autotrade.runtime.telegram_control import TelegramControlCommand
 from autotrade.runtime.telegram_control import TelegramControlPoller
 
@@ -39,6 +40,7 @@ __all__ = [
     "MarketCloseRuntime",
     "MarketOpenPreparationResult",
     "MarketOpenPreparationRuntime",
+    "BackgroundTelegramControlPoller",
     "RunnerControlMode",
     "RunnerControlState",
     "RunnerControlStore",

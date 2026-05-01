@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from collections.abc import Iterator
+from contextlib import contextmanager
+import fcntl
 import json
 import logging
 from dataclasses import dataclass
@@ -8,12 +12,15 @@ from datetime import datetime
 from enum import StrEnum
 from json import JSONDecodeError
 from pathlib import Path
+from threading import RLock
 from typing import Protocol
 
 from autotrade.common.persistence import move_corrupt_file
 from autotrade.common.persistence import write_text_atomically
 
 logger = logging.getLogger(__name__)
+_LOCK_REGISTRY_GUARD = RLock()
+_LOCK_REGISTRY: dict[Path, RLock] = {}
 
 
 def _require_aware_datetime(field_name: str, value: datetime) -> None:
@@ -109,6 +116,36 @@ class FileRunnerControlStore:
             raise ValueError("path must point to a file")
 
     def load(self) -> RunnerControlState:
+        with _locked_control_file(self.path):
+            return self._load_unlocked()
+
+    def save(self, state: RunnerControlState) -> None:
+        with _locked_control_file(self.path):
+            self._save_unlocked(state)
+
+    def pause(self, *, timestamp: datetime, source: str) -> RunnerControlState:
+        return self._update(
+            lambda state: state.pause(timestamp=timestamp, source=source)
+        )
+
+    def resume(self, *, timestamp: datetime, source: str) -> RunnerControlState:
+        return self._update(
+            lambda state: state.resume(timestamp=timestamp, source=source)
+        )
+
+    def save_telegram_update_offset(self, offset: int) -> RunnerControlState:
+        return self._update(lambda state: state.with_telegram_update_offset(offset))
+
+    def _update(
+        self,
+        transform: Callable[[RunnerControlState], RunnerControlState],
+    ) -> RunnerControlState:
+        with _locked_control_file(self.path):
+            state = transform(self._load_unlocked())
+            self._save_unlocked(state)
+            return state
+
+    def _load_unlocked(self) -> RunnerControlState:
         if not self.path.exists():
             return RunnerControlState()
         try:
@@ -137,7 +174,7 @@ class FileRunnerControlStore:
             )
             return RunnerControlState()
 
-    def save(self, state: RunnerControlState) -> None:
+    def _save_unlocked(self, state: RunnerControlState) -> None:
         write_text_atomically(
             self.path,
             json.dumps(
@@ -147,21 +184,6 @@ class FileRunnerControlStore:
                 sort_keys=True,
             ),
         )
-
-    def pause(self, *, timestamp: datetime, source: str) -> RunnerControlState:
-        state = self.load().pause(timestamp=timestamp, source=source)
-        self.save(state)
-        return state
-
-    def resume(self, *, timestamp: datetime, source: str) -> RunnerControlState:
-        state = self.load().resume(timestamp=timestamp, source=source)
-        self.save(state)
-        return state
-
-    def save_telegram_update_offset(self, offset: int) -> RunnerControlState:
-        state = self.load().with_telegram_update_offset(offset)
-        self.save(state)
-        return state
 
 
 def _serialize_state(state: RunnerControlState) -> dict[str, object]:
@@ -221,3 +243,27 @@ def _optional_int(raw_value: object, field_name: str) -> int | None:
     if raw_value < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return raw_value
+
+
+@contextmanager
+def _locked_control_file(path: Path) -> Iterator[None]:
+    lock = _thread_lock_for(path)
+    with lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f".{path.name}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _thread_lock_for(path: Path) -> RLock:
+    key = path.expanduser().resolve(strict=False)
+    with _LOCK_REGISTRY_GUARD:
+        lock = _LOCK_REGISTRY.get(key)
+        if lock is None:
+            lock = RLock()
+            _LOCK_REGISTRY[key] = lock
+        return lock

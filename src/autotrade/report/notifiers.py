@@ -4,15 +4,22 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
+import atexit
 from functools import lru_cache
 from http.client import HTTPConnection
 from http.client import HTTPSConnection
 import json
 import logging
 from pathlib import Path
+from queue import Empty
+from queue import Full
+from queue import Queue
 import re
 import socket
+from threading import Event
+from threading import Thread
 from time import sleep as default_sleep
+from time import monotonic
 from typing import Any
 from typing import cast
 from urllib.error import HTTPError
@@ -191,6 +198,97 @@ class NotificationDeliveryError(RuntimeError):
     pass
 
 
+@dataclass(slots=True)
+class BackgroundNotifier:
+    notifier: Notifier
+    max_queue_size: int = 100
+    flush_timeout_seconds: float = 2.0
+    failure_log_interval_seconds: float = 300.0
+    _queue: Queue[NotificationMessage] = field(init=False, repr=False)
+    _stop_event: Event = field(init=False, repr=False)
+    _worker: Thread = field(init=False, repr=False)
+    _last_failure_logged_at: float | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _last_queue_full_logged_at: float | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.max_queue_size <= 0:
+            raise ValueError("max_queue_size must be positive")
+        if self.flush_timeout_seconds <= 0:
+            raise ValueError("flush_timeout_seconds must be positive")
+        if self.failure_log_interval_seconds < 0:
+            raise ValueError("failure_log_interval_seconds must be non-negative")
+
+        self._queue = Queue(maxsize=self.max_queue_size)
+        self._stop_event = Event()
+        self._worker = Thread(
+            target=self._run,
+            name=f"autotrade-{type(self.notifier).__name__}-notifier",
+            daemon=True,
+        )
+        self._worker.start()
+        atexit.register(self.close)
+
+    def send(self, notification: NotificationMessage) -> None:
+        if self._stop_event.is_set():
+            self._log_queue_drop("background notifier is stopping")
+            return
+        try:
+            self._queue.put_nowait(notification)
+        except Full:
+            self._log_queue_drop("background notifier queue is full")
+
+    def close(self) -> None:
+        self._stop_event.set()
+        self._worker.join(timeout=self.flush_timeout_seconds)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set() or not self._queue.empty():
+            try:
+                notification = self._queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                self.notifier.send(notification)
+            except Exception as error:  # pragma: no cover - defensive worker guard
+                self._log_delivery_failure(error)
+            finally:
+                self._queue.task_done()
+
+    def _log_delivery_failure(self, error: Exception) -> None:
+        logged_at = self._last_failure_logged_at
+        now = monotonic()
+        if (
+            logged_at is not None
+            and now - logged_at < self.failure_log_interval_seconds
+        ):
+            return
+        self._last_failure_logged_at = now
+        logger.warning(
+            "background 알림 전송에 실패했습니다. notifier=%s error=%s",
+            type(self.notifier).__name__,
+            error,
+        )
+
+    def _log_queue_drop(self, reason: str) -> None:
+        logged_at = self._last_queue_full_logged_at
+        now = monotonic()
+        if (
+            logged_at is not None
+            and now - logged_at < self.failure_log_interval_seconds
+        ):
+            return
+        self._last_queue_full_logged_at = now
+        logger.warning("background 알림을 큐에 넣지 못했습니다. reason=%s", reason)
+
+
 @dataclass(frozen=True, slots=True)
 class TelegramHttpRequest:
     url: str
@@ -321,6 +419,20 @@ class CompositeNotifier:
             raise NotificationDeliveryError(
                 "; ".join(str(error) for error in failures),
             ) from failures[-1]
+
+    def close(self) -> None:
+        for notifier in reversed(self.notifiers):
+            close = getattr(notifier, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as error:  # pragma: no cover - defensive shutdown
+                logger.warning(
+                    "알림 종료 처리에 실패했습니다: notifier=%s error=%s",
+                    type(notifier).__name__,
+                    error,
+                )
 
 
 @dataclass(slots=True)

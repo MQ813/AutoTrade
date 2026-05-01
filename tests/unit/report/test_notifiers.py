@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from threading import Event
+from time import monotonic
 
 import pytest
 
 from autotrade.data import KST
 from autotrade.report import AlertSeverity
+from autotrade.report import BackgroundNotifier
 from autotrade.report import CompositeNotifier
 from autotrade.report import FileNotifier
 from autotrade.report import NotificationDeliveryError
@@ -83,6 +86,67 @@ def test_composite_notifier_raises_when_all_notifiers_fail() -> None:
                 body="still broken",
             )
         )
+
+
+def test_background_notifier_does_not_block_on_slow_delivery() -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingNotifier:
+        def send(self, notification: NotificationMessage) -> None:
+            started.set()
+            release.wait(timeout=1.0)
+
+    notifier = BackgroundNotifier(
+        BlockingNotifier(),
+        flush_timeout_seconds=0.1,
+    )
+    notification = NotificationMessage(
+        created_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        severity=AlertSeverity.INFO,
+        subject="slow",
+        body="delivery",
+    )
+
+    start = monotonic()
+    notifier.send(notification)
+    elapsed = monotonic() - start
+
+    assert elapsed < 0.1
+    assert started.wait(timeout=1.0)
+    release.set()
+    notifier.close()
+
+
+def test_background_notifier_close_uses_bounded_flush_timeout() -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingNotifier:
+        def send(self, notification: NotificationMessage) -> None:
+            started.set()
+            release.wait(timeout=1.0)
+
+    notifier = BackgroundNotifier(
+        BlockingNotifier(),
+        flush_timeout_seconds=0.01,
+    )
+    notifier.send(
+        NotificationMessage(
+            created_at=datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+            severity=AlertSeverity.INFO,
+            subject="shutdown",
+            body="flush",
+        )
+    )
+    assert started.wait(timeout=1.0)
+
+    start = monotonic()
+    notifier.close()
+    elapsed = monotonic() - start
+
+    assert elapsed < 0.2
+    release.set()
 
 
 def test_telegram_notifier_retries_rate_limit_and_uses_error_chat_id() -> None:

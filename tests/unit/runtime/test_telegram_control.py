@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
+from time import monotonic
+from time import sleep
 
 from autotrade.config import TelegramSettings
 from autotrade.data import KST
@@ -11,6 +13,7 @@ from autotrade.report import NotificationMessage
 from autotrade.report import TelegramHttpResponse
 from autotrade.runtime.control import FileRunnerControlStore
 from autotrade.runtime.control import RunnerControlMode
+from autotrade.runtime.telegram_control import BackgroundTelegramControlPoller
 from autotrade.runtime.telegram_control import TelegramControlPoller
 
 
@@ -57,6 +60,7 @@ def test_telegram_control_poller_accepts_primary_chat_commands(tmp_path) -> None
             enabled=True,
             bot_token="bot-token",
             chat_id="-100base",
+            control_timeout_seconds=2.5,
         ),
         control_store=control_store,
         notifier=notifier,
@@ -76,6 +80,7 @@ def test_telegram_control_poller_accepts_primary_chat_commands(tmp_path) -> None
     assert notifier.notifications[1].subject == "AutoTrade runner control [RESUME]"
     request_payload = json.loads(requests[0].body.decode("utf-8"))
     assert request_payload["allowed_updates"] == ["message"]
+    assert requests[0].timeout == 2.5
 
 
 def test_telegram_control_poller_ignores_other_chats_and_advances_offset(
@@ -166,6 +171,61 @@ def test_telegram_control_poller_persists_offset_when_ack_notification_fails(
     assert state.telegram_update_offset == 31
     second_payload = json.loads(requests[1].body.decode("utf-8"))
     assert second_payload["offset"] == 31
+
+
+def test_background_telegram_control_poller_updates_store(tmp_path) -> None:
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    responses = [
+        {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 40,
+                    "message": {"chat": {"id": "-100base"}, "text": "/pause"},
+                }
+            ],
+        },
+        {"ok": True, "result": []},
+    ]
+
+    def transport(request):
+        del request
+        payload = responses.pop(0) if responses else {"ok": True, "result": []}
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps(payload).encode("utf-8"),
+            headers={},
+        )
+
+    poller = TelegramControlPoller(
+        settings=TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+        ),
+        control_store=control_store,
+        notifier=RecordingNotifier(),
+        clock=lambda: datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        transport=transport,
+    )
+    background = BackgroundTelegramControlPoller(
+        poller,
+        poll_interval_seconds=0.01,
+        stop_timeout_seconds=0.1,
+    )
+
+    background.start()
+    deadline = monotonic() + 1.0
+    while monotonic() < deadline:
+        if control_store.load().mode is RunnerControlMode.PAUSED:
+            break
+        sleep(0.001)
+    background.stop()
+
+    state = control_store.load()
+    assert state.mode is RunnerControlMode.PAUSED
+    assert state.paused_by == "telegram"
+    assert state.telegram_update_offset == 41
 
 
 @dataclass(slots=True)

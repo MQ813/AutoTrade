@@ -15,6 +15,7 @@ The repository includes baseline regular-session `scheduler/report` support.
 - `weekly-review` reads repo-root `.env` by default, saves the weekly review, and sends Telegram if enabled.
 - Telegram defaults to `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error channels can use `AUTOTRADE_TELEGRAM_WARNING_CHAT_ID` and `AUTOTRADE_TELEGRAM_ERROR_CHAT_ID`.
 - Set `AUTOTRADE_TELEGRAM_FORCE_IPV4=true` when the host has a broken IPv6 route to Telegram; this limits Telegram HTTP requests and control polling to IPv4.
+- Telegram alert sends run through a bounded background queue. `run-continuous` polls Telegram control commands in a separate background worker and the scheduler reads only `runner_control.json`.
 
 ## CLI Behavior
 
@@ -27,7 +28,7 @@ The repository includes baseline regular-session `scheduler/report` support.
 - Default inputs/outputs: `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, `execution_state.json`, `scheduler_state.json`.
 - Runner control state: `AUTOTRADE_LOG_DIR/runner_control.json`.
 - Exit codes: `0=success`, `1=operation failure or safe stop`, `2=config/input error`.
-- Runtime state files (`execution_state.json`, `scheduler_state.json`, `intraday_risk_state.json`, and `runner_control.json`) are saved by temp file + replace; corrupt files are backed up as `*.corrupt-*` and reset.
+- Runtime state files (`execution_state.json`, `scheduler_state.json`, `intraday_risk_state.json`, and `runner_control.json`) are saved by temp file + replace; corrupt files are backed up as `*.corrupt-*` and reset. Runner control reads/writes use a sidecar lock file so the runner and Telegram control poller can share the file safely.
 - KIS timeout, URL, and connection failures are normalized to `KoreaInvestmentBrokerError`; retryable read-side requests retry before failing, while order submissions fail fast and let the runner safe-stop.
 - `--paper-cash` only applies when `AUTOTRADE_PAPER_TRADING_MODE=simulate`.
 - `tools/daily_inspection.py` and `tools/weekly_review.py` create text artifacts under `AUTOTRADE_LOG_DIR`; orchestration connects live executors and external alerts.
@@ -72,6 +73,7 @@ Optional:
 - `AUTOTRADE_TELEGRAM_FORCE_IPV4`
 - `AUTOTRADE_TELEGRAM_MAX_RETRIES`
 - `AUTOTRADE_TELEGRAM_TIMEOUT_SECONDS`
+- `AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS`
 
 ## Before Open
 
@@ -107,7 +109,7 @@ Optional:
 - Run log: phase, scheduled time, success/failure, details.
 - Daily report: counts and failures by open/intraday/close phase.
 - Alerts: `error` on failure, `warning` if nothing ran, otherwise `info`.
-- Telegram: retries `429`, `5xx`, and network errors; splits long messages.
-- Telegram control: when Telegram is enabled, `/pause` and `/resume` commands are accepted only from `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error chat ids are output-only for v1.
+- Telegram: retries `429`, `5xx`, and network errors; splits long messages; sends through a bounded background queue so network retry waits do not block the active operation path.
+- Telegram control: when Telegram is enabled, `/pause` and `/resume` commands are accepted only from `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error chat ids are output-only for v1. Control polling uses `AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS`, separate from alert send timeout.
 - Daily inspection: pre-open, intraday, and post-close checks as `passed/failed/pending`.
 - Weekly review: weekly summary of daily run and inspection results plus retrospection prompt.

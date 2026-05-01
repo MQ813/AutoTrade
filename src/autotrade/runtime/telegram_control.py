@@ -4,8 +4,12 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from enum import StrEnum
+from threading import Event
+from threading import Thread
+from time import monotonic
 
 from autotrade.config import TelegramSettings
 from autotrade.report import AlertSeverity
@@ -18,6 +22,7 @@ from autotrade.runtime.control import FileRunnerControlStore
 
 logger = logging.getLogger(__name__)
 _TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+_CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS = 300.0
 
 
 class TelegramControlCommand(StrEnum):
@@ -53,7 +58,7 @@ class TelegramControlPoller:
             url=f"{_TELEGRAM_API_BASE_URL}/bot{self.settings.bot_token}/getUpdates",
             body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"},
-            timeout=self.settings.timeout_seconds,
+            timeout=self.settings.control_timeout_seconds,
             force_ipv4=self.settings.force_ipv4,
         )
         response = self.transport(request)
@@ -120,6 +125,76 @@ class TelegramControlPoller:
                 notification.subject,
                 error,
             )
+
+
+@dataclass(slots=True)
+class BackgroundTelegramControlPoller:
+    poller: TelegramControlPoller
+    poll_interval_seconds: float = 5.0
+    stop_timeout_seconds: float = 2.0
+    failure_log_interval_seconds: float = _CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS
+    _stop_event: Event = field(init=False, repr=False)
+    _worker: Thread | None = field(default=None, init=False, repr=False)
+    _last_failure_logged_at: float | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _last_failure_message: str | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        if self.stop_timeout_seconds <= 0:
+            raise ValueError("stop_timeout_seconds must be positive")
+        if self.failure_log_interval_seconds < 0:
+            raise ValueError("failure_log_interval_seconds must be non-negative")
+        self._stop_event = Event()
+
+    def start(self) -> None:
+        if self._worker is not None and self._worker.is_alive():
+            return
+        if self._stop_event.is_set():
+            self._stop_event = Event()
+        self._worker = Thread(
+            target=self._run,
+            name="autotrade-telegram-control-poller",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._worker is not None:
+            self._worker.join(timeout=self.stop_timeout_seconds)
+
+    def close(self) -> None:
+        self.stop()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self.poller.poll()
+            except Exception as error:  # pragma: no cover - defensive worker guard
+                self._log_failure(error)
+            self._stop_event.wait(self.poll_interval_seconds)
+
+    def _log_failure(self, error: Exception) -> None:
+        error_message = str(error) or type(error).__name__
+        logged_at = self._last_failure_logged_at
+        now = monotonic()
+        if (
+            error_message == self._last_failure_message
+            and logged_at is not None
+            and now - logged_at < self.failure_log_interval_seconds
+        ):
+            return
+        self._last_failure_message = error_message
+        self._last_failure_logged_at = now
+        logger.warning(
+            "telegram control background poller 실행에 실패했습니다. error=%s",
+            error_message,
+        )
 
 
 def _decode_payload(body: bytes) -> dict[str, object]:

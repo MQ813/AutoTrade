@@ -48,6 +48,7 @@ class TelegramSettings:
     force_ipv4: bool = False
     max_retries: int = 3
     timeout_seconds: float = 10.0
+    control_timeout_seconds: float = 3.0
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -68,6 +69,8 @@ class TelegramSettings:
             raise ValueError("max_retries must be non-negative")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if self.control_timeout_seconds <= 0:
+            raise ValueError("control_timeout_seconds must be positive")
 
 
 @dataclass(frozen=True, slots=True)
